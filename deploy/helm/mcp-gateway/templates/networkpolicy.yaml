@@ -1,0 +1,10 @@
+﻿apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "mcp-gateway.fullname" . }}
+spec:
+  podSelector:
+    matchLabels:
+      app: {{ include "mcp-gateway.name" . }}
+  policyTypes: [Ingress, Egress]
+  # TODO: allowlist egress на upstream LLM и Redis

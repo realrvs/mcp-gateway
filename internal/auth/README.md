@@ -1,0 +1,1 @@
+﻿# Auth\n\nmTLS + SPIFFE/SPIRE + JWT. См. ADR-0001.

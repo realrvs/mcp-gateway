@@ -1,0 +1,1 @@
+﻿# MCP Protocol\n\nStreamable HTTP + SSE + JSON-RPC 2.0.

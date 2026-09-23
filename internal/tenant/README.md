@@ -1,0 +1,1 @@
+﻿# Tenant\n\nСквозной tenant_id через context.Context.

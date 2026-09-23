@@ -1,0 +1,10 @@
+﻿# Multi-tenant конфигурация
+tenants:
+  acme:
+    upstream: "https://llm.acme.internal"
+    pii_policy: "gdpr"
+    slo_tier: "enterprise"
+  globex:
+    upstream: "https://llm.globex.internal"
+    pii_policy: "hipaa"
+    slo_tier: "standard"

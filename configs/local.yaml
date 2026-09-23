@@ -1,0 +1,10 @@
+﻿# Локальная конфигурация
+server:
+  addr: ":8080"
+  tls:
+    enabled: false  # для локальной разработки
+tenants:
+  - id: "dev"
+    rate_limit:
+      tools_call: 100  # запросов/минуту
+    pii_policy: "permissive"

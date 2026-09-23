@@ -1,0 +1,38 @@
+﻿version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: gateway
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: changeme
+    ports:
+      - "5432:5432"
+
+  spire-server:
+    image: ghcr.io/spiffe/spire-server:1.9.0
+    volumes:
+      - ./deploy/spire/server:/opt/spire/conf/server
+      - spire-data:/opt/spire/data
+    ports:
+      - "8081:8081"
+
+  spire-agent:
+    image: ghcr.io/spiffe/spire-agent:1.9.0
+    depends_on:
+      - spire-server
+    volumes:
+      - ./deploy/spire/agent:/opt/spire/conf/agent
+      - /tmp/spire-agent/public:/opt/spire/sockets
+
+volumes:
+  spire-data:

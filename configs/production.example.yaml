@@ -1,0 +1,16 @@
+﻿# Пример production-конфигурации
+server:
+  addr: ":8443"
+  tls:
+    enabled: true
+    spiffe:
+      trust_domain: "example.org"
+tenants:
+  - id: "acme"
+    rate_limit:
+      tools_call: 1000
+    pii_policy: "strict"
+    circuit_breaker:
+      max_requests: 3
+      interval: "30s"
+      timeout: "60s"

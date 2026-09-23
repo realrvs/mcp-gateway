@@ -1,0 +1,30 @@
+﻿# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test
+*.test
+coverage.out
+
+# Go
+/vendor/
+go.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Env
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+/dist/
+/build/

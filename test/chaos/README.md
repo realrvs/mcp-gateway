@@ -1,0 +1,1 @@
+﻿Chaos-тесты через chaos-mesh: убить Redis, отозвать SVID.

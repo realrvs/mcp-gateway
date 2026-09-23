@@ -1,0 +1,1 @@
+﻿Integration-тесты с testcontainers-go (Redis, Postgres, SPIRE).

@@ -1,0 +1,1 @@
+﻿# Circuit Breaker\n\nPer-tenant per-upstream.
