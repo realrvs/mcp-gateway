@@ -1,4 +1,4 @@
-﻿# Compliance Mapping
+# Compliance Mapping
 
 ## 152-ФЗ (РФ)
 | Требование | Реализация | Где в коде |

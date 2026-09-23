@@ -1,4 +1,4 @@
-﻿# Multi-tenant конфигурация
+# Multi-tenant конфигурация
 tenants:
   acme:
     upstream: "https://llm.acme.internal"

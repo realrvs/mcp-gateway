@@ -1,3 +1,3 @@
-﻿package auth
+package auth
 
 // TODO: HTTP middleware для аутентификации

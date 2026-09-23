@@ -1,1 +1,1 @@
-﻿# Rate Limiting\n\nPer-tenant sliding window на Redis.
+# Rate Limiting\n\nPer-tenant sliding window на Redis.

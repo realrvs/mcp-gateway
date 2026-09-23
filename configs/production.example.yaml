@@ -1,4 +1,4 @@
-﻿# Пример production-конфигурации
+# Пример production-конфигурации
 server:
   addr: ":8443"
   tls:

@@ -1,4 +1,4 @@
-﻿# Trust Boundaries
+# Trust Boundaries
 
 1. Client → Gateway (mTLS, SPIFFE)
 2. Gateway → SPIRE Agent (Unix socket)

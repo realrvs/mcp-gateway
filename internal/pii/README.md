@@ -1,1 +1,1 @@
-﻿# PII Redaction\n\nМаскирование PII перед отправкой в LLM.
+# PII Redaction\n\nМаскирование PII перед отправкой в LLM.

@@ -1,1 +1,1 @@
-﻿# Audit\n\nHash-chain audit log с HMAC. См. ADR-0002.
+# Audit\n\nHash-chain audit log с HMAC. См. ADR-0002.

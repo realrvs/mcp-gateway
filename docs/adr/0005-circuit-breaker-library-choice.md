@@ -1,4 +1,4 @@
-﻿# ADR-0005: Выбор библиотеки circuit breaker
+# ADR-0005: Выбор библиотеки circuit breaker
 
 ## Status
 Accepted

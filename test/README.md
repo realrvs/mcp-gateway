@@ -1,1 +1,1 @@
-﻿# Tests\n\nunit / integration / load / security / chaos.
+# Tests\n\nunit / integration / load / security / chaos.

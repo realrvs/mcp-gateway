@@ -1,1 +1,1 @@
-﻿Нагрузочные тесты k6: steady, spike, soak.
+Нагрузочные тесты k6: steady, spike, soak.

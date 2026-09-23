@@ -1,4 +1,4 @@
-﻿apiVersion: v2
+apiVersion: v2
 name: mcp-gateway
 description: Production-Grade MCP Gateway
 type: application

@@ -1,1 +1,1 @@
-﻿# Tenant\n\nСквозной tenant_id через context.Context.
+# Tenant\n\nСквозной tenant_id через context.Context.

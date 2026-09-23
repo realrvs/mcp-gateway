@@ -1,1 +1,1 @@
-﻿Security-тесты: cross-tenant access, tampering audit log.
+Security-тесты: cross-tenant access, tampering audit log.

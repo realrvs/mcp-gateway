@@ -1,4 +1,4 @@
-﻿# ADR-0004: tenant_id в context.Context
+# ADR-0004: tenant_id в context.Context
 
 ## Status
 Accepted

@@ -1,4 +1,4 @@
-﻿# Threat Model: MCP Gateway
+# Threat Model: MCP Gateway
 
 ## Scope
 TODO

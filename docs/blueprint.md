@@ -1,4 +1,4 @@
-﻿# MCP Gateway: Production Blueprint
+# MCP Gateway: Production Blueprint
 
 ## 1. Проблема и контекст
 TODO

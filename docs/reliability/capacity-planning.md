@@ -1,4 +1,4 @@
-﻿# Capacity Planning & FinOps
+# Capacity Planning & FinOps
 
 ## Cost per 1M MCP calls
 TODO

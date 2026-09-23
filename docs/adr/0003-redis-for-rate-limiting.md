@@ -1,4 +1,4 @@
-﻿# ADR-0003: Redis для rate limiting
+# ADR-0003: Redis для rate limiting
 
 ## Status
 Accepted

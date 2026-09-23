@@ -1,4 +1,4 @@
-﻿package breaker
+package breaker
 
 // TODO: sony/gobreaker
 // TODO: именование cb:<tenant>:<upstream>

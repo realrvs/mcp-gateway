@@ -1,4 +1,4 @@
-﻿module github.com/realrvs/mcp-gateway
+module github.com/realrvs/mcp-gateway
 
 go 1.23
 

@@ -1,4 +1,4 @@
-﻿# Data Flow
+# Data Flow
 
 ## Поток tools/call
 1. Client → mTLS handshake

@@ -1,4 +1,4 @@
-﻿# SLO: MCP Gateway
+# SLO: MCP Gateway
 
 ## Service Level Indicators (SLI)
 

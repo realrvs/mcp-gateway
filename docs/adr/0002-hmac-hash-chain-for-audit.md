@@ -1,4 +1,4 @@
-﻿# ADR-0002: HMAC hash-chain для audit log
+# ADR-0002: HMAC hash-chain для audit log
 
 ## Status
 Accepted

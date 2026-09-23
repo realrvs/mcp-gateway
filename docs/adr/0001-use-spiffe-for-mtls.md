@@ -1,4 +1,4 @@
-﻿# ADR-0001: Использование SPIFFE/SPIRE для mTLS
+# ADR-0001: Использование SPIFFE/SPIRE для mTLS
 
 ## Status
 Accepted

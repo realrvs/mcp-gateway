@@ -1,4 +1,4 @@
-﻿# Incident Response Runbook
+# Incident Response Runbook
 
 ## Security-инциденты
 
