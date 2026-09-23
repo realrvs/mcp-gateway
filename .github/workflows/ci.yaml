@@ -16,9 +16,11 @@ jobs:
         with:
           go-version: "1.23"
       - name: Download dependencies
-        run: go mod download || true
+        run: |
+          go mod download || true
       - name: Build
-        run: go build ./... || echo "Build skipped: no compilable code yet"
+        run: |
+          go build ./... || echo "Build skipped: no compilable code yet"
 
   test:
     name: test
@@ -29,13 +31,14 @@ jobs:
         with:
           go-version: "1.23"
       - name: Download dependencies
-        run: go mod download || true
+        run: |
+          go mod download || true
       - name: Run tests
         run: |
           if find . -name "*_test.go" -not -path "./vendor/*" | grep -q .; then
             go test -race ./...
           else
-            echo "No test files found — skipping tests"
+            echo "No test files found - skipping tests"
           fi
 
   security:
