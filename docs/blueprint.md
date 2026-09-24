@@ -1,10 +1,10 @@
 # MCP Gateway: Production Blueprint
 
 - **Status:** Living Document
-- **Version:** 1.0
-- **Last Updated:** 2026-09-23
+- **Version:** 2.0
+- **Last Updated:** 2026-09-24
 - **Author:** Roman Sokolov (Architect)
-- **Audience:** Architects, CTO, InfoSec, SRE, Product Owners
+- **Audience:** Architects, CTO, InfoSec, SRE, Product Owners, Finance
 
 ---
 
@@ -12,14 +12,20 @@
 
 1. [Проблема и контекст](#1-проблема-и-контекст)
 2. [Целевая архитектура](#2-целевая-архитектура)
+   - 2.1. [C4 Context](#21-c4-context-уровень-1)
+   - 2.2. [C4 Container](#22-c4-container-уровень-2)
+   - 2.3. [C4 Container with Cost Annotations](#23-c4-container-with-cost-annotations)
+   - 2.4. [Поток запроса tools/call](#24-поток-запроса-toolscall)
+   - 2.5. [Слои доверия](#25-слои-доверия-trust-boundaries)
 3. [Ключевые архитектурные решения](#3-ключевые-архитектурные-решения)
 4. [Безопасность и compliance](#4-безопасность-и-compliance)
 5. [Надёжность и SLO](#5-надёжность-и-slo)
 6. [Multi-tenancy](#6-multi-tenancy)
-7. [Deployment](#7-deployment)
-8. [Observability](#8-observability)
-9. [Roadmap и ограничения](#9-roadmap-и-ограничения)
-10. [Ссылки](#10-ссылки)
+7. [FinOps и Unit Economics](#7-finops-и-unit-economics)
+8. [Deployment](#8-deployment)
+9. [Observability](#9-observability)
+10. [Roadmap и ограничения](#10-roadmap-и-ограничения)
+11. [Ссылки](#11-ссылки)
 
 ---
 
@@ -44,8 +50,8 @@
                                        ▼
                                 ┌──────────────┐
                                 │  LLM API     │
-                                │  (OpenAI,    │
-                                │  Anthropic,  │
+                                │  (GigaChat,  │
+                                │  YandexGPT,  │
                                 │  Ollama)     │
                                 └──────────────┘
 ```
@@ -129,13 +135,13 @@ MCP-запросов от клиента к upstream. Она **работала 
     │  PoC: нет учёта затрат на LLM                                │
     │                                                              │
     │  В production:                                               │
-    │  • Каждый вызов LLM стоит денег ($/1k tokens)                │
+    │  • Каждый вызов LLM стоит денег (₽/1k токенов)               │
     │  • Нужен per-tenant billing                                  │
     │  • Нужны лимиты для контроля затрат                          │
     │  • Стоимость на 1M MCP calls для capacity planning           │
     │                                                              │
     │  Решение: rate limiting per tenant (ADR-0003) + метрики      │
-    │  usage per tenant × method                                   │
+    │  usage per tenant × method + model routing                   │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
 ```
@@ -187,9 +193,10 @@ MCP Gateway предназначен для:
     │        ▼              ▼              ▼                       │
     │   ┌─────────┐   ┌──────────┐   ┌──────────┐                 │
     │   │ LLM API │   │ MCP      │   │ Legacy   │                 │
-    │   │ (OpenAI,│   │ Servers  │   │ Systems  │                 │
-    │   │Anthropic│   │ (tools,  │   │ (1C, SAP,│                 │
-    │   │ Ollama) │   │ resources│   │  ЕИС)    │                 │
+    │   │ (Giga-  │   │ Servers  │   │ Systems  │                 │
+    │   │  Chat,  │   │ (tools,  │   │ (1C, SAP,│                 │
+    │   │ Yandex, │   │ resources│   │  ЕИС)    │                 │
+    │   │ Ollama) │   │ )        │   │          │                 │
     │   └─────────┘   └──────────┘   └──────────┘                 │
     │                                                              │
     │   External dependencies:                                     │
@@ -264,7 +271,318 @@ MCP Gateway предназначен для:
     └────────┘  └────────┘  └────────┘  └────────┘  └──────────┘
 ```
 
-### 2.3. Поток запроса `tools/call`
+### 2.3. C4 Container with Cost Annotations
+
+Та же C4 Container диаграмма, но с аннотациями стоимости на каждом
+компоненте. Позволяет **быстро увидеть, где деньги** и **принимать
+архитектурные решения с учётом цены**.
+
+**Baseline для расчёта:** 100 RPS sustained, ~8.6M calls/day,
+~260M calls/month, средний call = 2k input + 500 output tokens,
+модель GigaChat Pro.
+
+```
+    ┌───────────────────────────────────────────────────────────────────────┐
+    │                                                                        │
+    │   MCP Gateway — C4 Container with Cost Annotations                     │
+    │   Baseline: 100 RPS, ~260M calls/month                                 │
+    │                                                                        │
+    │   ┌──────────────────────────────────────────────────────────────┐     │
+    │   │                                                                │     │
+    │   │   Client Side                        Cost: 0 ₽ (клиент платит) │     │
+    │   │                                                                │     │
+    │   │   ┌──────────────────┐                                         │     │
+    │   │   │   AI Client      │                                         │     │
+    │   │   │  (Claude Desktop,│                                         │     │
+    │   │   │   IDE, custom)   │                                         │     │
+    │   │   └────────┬─────────┘                                         │     │
+    │   │            │                                                   │     │
+    │   │            │ mTLS (SPIFFE SVID)                                │     │
+    │   │            │ Cost: 0 ₽ (бесплатно)                              │     │
+    │   │            │                                                   │     │
+    │   └────────────┼───────────────────────────────────────────────────┘     │
+    │                │                                                        │
+    │                ▼                                                        │
+    │   ┌──────────────────────────────────────────────────────────────┐     │
+    │   │                                                                │     │
+    │   │   Gateway (Zone 1: DMZ)                                       │     │
+    │   │                                                                │     │
+    │   │   ┌──────────────────────────────────────────────────────┐    │     │
+    │   │   │                                                        │    │     │
+    │   │   │   MCP Gateway (Go)                                     │    │     │
+    │   │   │                                                        │    │     │
+    │   │   │   ┌────────────────────────────────────────────────┐ │    │     │
+    │   │   │   │  Middleware Pipeline                            │ │    │     │
+    │   │   │   │                                                 │ │    │     │
+    │   │   │   │  • mTLS + SPIFFE ............ 0 ₽               │ │    │     │
+    │   │   │   │  • JWT validation ........... 0 ₽               │ │    │     │
+    │   │   │   │  • Tenant resolver .......... 0 ₽               │ │    │     │
+    │   │   │   │  • Rate limiter ............. 0 ₽ (Redis ниже)  │ │    │     │
+    │   │   │   │  • PII redaction ............ 0 ₽ (CPU-bound)   │ │    │     │
+    │   │   │   │  • Circuit breaker .......... 0 ₽ (in-memory)   │ │    │     │
+    │   │   │   │  • Audit logger ............. 0 ₽ (Postgres)    │ │    │     │
+    │   │   │   │  • Upstream client .......... 0 ₽               │ │    │     │
+    │   │   │   │                                                 │ │    │     │
+    │   │   │   └────────────────────────────────────────────────┘ │    │     │
+    │   │   │                                                        │    │     │
+    │   │   │   Compute Cost:                                        │    │     │
+    │   │   │   • 2 vCPU / 4 GB RAM per pod                          │    │     │
+    │   │   │   • 2-10 pods (HPA on CPU + inflight_requests)         │    │     │
+    │   │   │   • ~4,500 ₽/pod/месяц                                 │    │     │
+    │   │   │   • Среднее: 5 pods × 4,500 = 22,500 ₽/месяц           │    │     │
+    │   │   │   • Per 1M calls: ~2.5 ₽                               │    │     │
+    │   │   │                                                        │    │     │
+    │   │   │   % от общего: ~0.007%                                 │    │     │
+    │   │   │   ⚠ Пренебрежимо мало                                  │    │     │
+    │   │   │                                                        │    │     │
+    │   │   └──────────────────────────────────────────────────────┘    │     │
+    │   │                                                                │     │
+    │   └────────────────────────┬───────────────────────────────────────┘     │
+    │                            │                                            │
+    │                            │ mTLS                                       │
+    │                            │                                            │
+    │   ┌────────────────────────┼───────────────────────────────────────┐    │
+    │   │                        │                                       │    │
+    │   │   Backend (Zone 2)     │                                       │    │
+    │   │                        ▼                                       │    │
+    │   │   ┌──────────────────┐  ┌──────────────────┐  ┌────────────┐   │    │
+    │   │   │                  │  │                  │  │            │   │    │
+    │   │   │   Redis          │  │   PostgreSQL     │  │   Vault    │   │    │
+    │   │   │   (rate limit,   │  │   (audit log)    │  │  (secrets) │   │    │
+    │   │   │    CB state)     │  │                  │  │            │   │    │
+    │   │   │                  │  │                  │  │            │   │    │
+    │   │   │   HA, 2 GB,      │  │   HA, 100 GB,    │  │   HA, 3    │   │    │
+    │   │   │   4 vCPU         │  │   2 vCPU, 8 GB   │  │   nodes    │   │    │
+    │   │   │                  │  │                  │  │            │   │    │
+    │   │   │   ~19,000 ₽/мес  │  │   ~45,000 ₽/мес  │  │ ~30,000 ₽/ │   │    │
+    │   │   │                  │  │                  │  │   мес      │   │    │
+    │   │   │   Per 1M calls:  │  │   Per 1M calls:  │  │            │   │    │
+    │   │   │   ~0.13 ₽        │  │   ~6 ₽           │  │  Fixed:    │   │    │
+    │   │   │                  │  │                  │  │  не зависит│   │    │
+    │   │   │   % total:       │  │   % total:       │  │  от calls  │   │    │
+    │   │   │   ~0.006%        │  │   ~0.014%        │  │            │   │    │
+    │   │   │                  │  │                  │  │  % total:  │   │    │
+    │   │   │                  │  │                  │  │  ~0.009%   │   │    │
+    │   │   └──────────────────┘  └──────────────────┘  └────────────┘   │    │
+    │   │                                                                │    │
+    │   │   ┌──────────────────┐  ┌──────────────────┐                   │    │
+    │   │   │                  │  │                  │                   │    │
+    │   │   │   S3 WORM        │  │   SPIRE Server   │                   │    │
+    │   │   │   (root hash)    │  │   (identity)     │                   │    │
+    │   │   │                  │  │                  │                   │    │
+    │   │   │   Object Lock    │  │   HA, 3 nodes    │                   │    │
+    │   │   │   7 years        │  │                  │                   │    │
+    │   │   │                  │  │                  │                   │    │
+    │   │   │   ~37,500 ₽/мес  │  │   ~25,000 ₽/мес  │                   │    │
+    │   │   │                  │  │                  │                   │    │
+    │   │   │   Per 1M calls:  │  │   Fixed:         │                   │    │
+    │   │   │   ~0.6 ₽         │  │   не зависит     │                   │    │
+    │   │   │                  │  │   от calls       │                   │    │
+    │   │   │   % total:       │  │                  │                   │    │
+    │   │   │   ~0.011%        │  │   % total:       │                   │    │
+    │   │   │                  │  │   ~0.008%        │                   │    │
+    │   │   └──────────────────┘  └──────────────────┘                   │    │
+    │   │                                                                │    │
+    │   │   ┌──────────────────────────────────────────────────────┐    │    │
+    │   │   │                                                        │    │    │
+    │   │   │   Observability (Prometheus + Grafana + Loki)          │    │    │
+    │   │   │                                                        │    │    │
+    │   │   │   • Metrics: 26 GB / 30 days                           │    │    │
+    │   │   │   • Logs: 260 GB / month                               │    │    │
+    │   │   │   • ~30,000-100,000 ₽/месяц (managed)                  │    │    │
+    │   │   │                                                        │    │    │
+    │   │   │   Fixed: не зависит от calls                           │    │    │
+    │   │   │   % total: ~0.009%                                     │    │    │
+    │   │   │                                                        │    │    │
+    │   │   └──────────────────────────────────────────────────────┘    │    │
+    │   │                                                                │    │
+    │   └────────────────────────┬───────────────────────────────────────┘    │
+    │                            │                                            │
+    │                            │ HTTPS + API key                            │
+    │                            │ Cost: egress ~560 ₽ / 1M calls             │
+    │                            │                                            │
+    │   ┌────────────────────────┼───────────────────────────────────────┐    │
+    │   │                        │                                       │    │
+    │   │   Upstream (Zone 3)    ▼                                       │    │
+    │   │                                                                │    │
+    │   │   ┌──────────────────┐  ┌──────────────────┐  ┌────────────┐   │    │
+    │   │   │                  │  │                  │  │            │   │    │
+    │   │   │   GigaChat       │  │   YandexGPT      │  │  Ollama    │   │    │
+    │   │   │   (Pro/Max/Lite) │  │   (Pro/Lite)     │  │ (self-     │   │    │
+    │   │   │                  │  │                  │  │  hosted)   │   │    │
+    │   │   │   ⚠️ 99.5% всей  │  │                  │  │            │   │    │
+    │   │   │   стоимости!     │  │                  │  │  Альтерна- │   │    │
+    │   │   │                  │  │                  │  │  тива:     │   │    │
+    │   │   │   Pro:           │  │   Pro:           │  │  ~0.6 ₽/   │   │    │
+    │   │   │   1.25 ₽/call    │  │   2.00 ₽/call    │  │  call      │   │    │
+    │   │   │                  │  │                  │  │            │   │    │
+    │   │   │   Max:           │  │   Lite:          │  │  GPU       │   │    │
+    │   │   │   1.63 ₽/call    │  │   0.50 ₽/call    │  │  ~300 ₽/   │   │    │
+    │   │   │                  │  │                  │  │  час       │   │    │
+    │   │   │   Lite:          │  │                  │  │            │   │    │
+    │   │   │   0.16 ₽/call    │  │                  │  │  Требует   │   │    │
+    │   │   │                  │  │                  │  │  ML ops    │   │    │
+    │   │   │   % total:       │  │   % total:       │  │            │   │    │
+    │   │   │   ~99.5%         │  │   зависит от mix │  │  % total:  │   │    │
+    │   │   │   ⚠️ КРИТИЧНО    │  │                  │  │  ~0.05%    │   │    │
+    │   │   └──────────────────┘  └──────────────────┘  └────────────┘   │    │
+    │   │                                                                │    │
+    │   └────────────────────────────────────────────────────────────────┘    │
+    │                                                                        │
+    └───────────────────────────────────────────────────────────────────────┘
+```
+
+#### Как читать эту диаграмму
+
+**1. Размер прямоугольника ≠ стоимость.** Gateway нарисован крупно
+потому что это центр логики, но он **0.007%** стоимости. LLM
+нарисован мелко, но это **99.5%**.
+
+**2. Cost per 1M calls — универсальная метрика.** Позволяет сравнивать
+разные компоненты: 0.13 ₽ (Redis) vs 1,250,000 ₽ (LLM) — разница в
+10 миллионов раз.
+
+**3. Fixed vs variable.** Фиксированные компоненты (Vault, SPIRE,
+observability) **не зависят** от количества вызовов — их стоимость
+размазывается по всем тенантам. Variable (LLM, egress, Postgres)
+растут с нагрузкой.
+
+**4. Ключевой вывод:**
+
+```
+    ┌──────────────────────────────────────────────────────────────┐
+    │                                                              │
+    │  Инвестиции в оптимизацию gateway: 0.007% стоимости          │
+    │  → даже 100x улучшение = 0.7% экономии                       │
+    │                                                              │
+    │  Инвестиции в оптимизацию LLM: 99.5% стоимости               │
+    │  → даже 10% улучшение = ~10% экономии (32.5M ₽/месяц)        │
+    │                                                              │
+    │  → FinOps-фокус: model routing, caching, prompt optimization │
+    │  → НЕ: переписывание gateway на Rust, оптимизация regex      │
+    │                                                              │
+    └──────────────────────────────────────────────────────────────┘
+```
+
+#### Cost summary table
+
+```
+    ┌──────────────────────────┬─────────────────┬─────────────┬──────────┐
+    │ Component                │ ₽/месяц         │ ₽/1M calls  │ % total  │
+    ├──────────────────────────┼─────────────────┼─────────────┼──────────┤
+    │                          │                 │             │          │
+    │ LLM API (GigaChat Pro)   │ ~325,000,000 ₽* │ 1,250,000 ₽ │ 99.50%   │
+    │                          │                 │             │          │
+    │ Networking (egress)      │ ~145,000 ₽      │ ~560 ₽      │ 0.045%   │
+    │                          │                 │             │          │
+    │ PostgreSQL (HA)          │ ~45,000 ₽       │ ~6 ₽        │ 0.014%   │
+    │                          │                 │             │          │
+    │ S3 (WORM archive)        │ ~37,500 ₽       │ ~0.6 ₽      │ 0.011%   │
+    │                          │                 │             │          │
+    │ Vault (HA)               │ ~30,000 ₽       │ fixed       │ 0.009%   │
+    │                          │                 │             │          │
+    │ Observability            │ ~30,000 ₽       │ fixed       │ 0.009%   │
+    │                          │                 │             │          │
+    │ SPIRE Server (HA)        │ ~25,000 ₽       │ fixed       │ 0.008%   │
+    │                          │                 │             │          │
+    │ Gateway compute          │ ~22,500 ₽       │ ~2.5 ₽      │ 0.007%   │
+    │                          │                 │             │          │
+    │ Redis (HA)               │ ~19,000 ₽       │ ~0.13 ₽     │ 0.006%   │
+    │                          │                 │             │          │
+    ├──────────────────────────┼─────────────────┼─────────────┼──────────┤
+    │ TOTAL                    │ ~325,650,000 ₽  │ 1,250,570 ₽ │ 100%     │
+    │                          │                 │             │          │
+    └──────────────────────────┴─────────────────┴─────────────┴──────────┘
+
+    * 260M calls × 1.25 ₽ = 325M ₽
+```
+
+#### Cost-driven architecture decisions
+
+На основе этой диаграммы видно, **куда стоит инвестировать**:
+
+```
+    ┌──────────────────────────────────────────────────────────────┐
+    │                                                              │
+    │  ✅ Высокий ROI (делать):                                     │
+    │                                                              │
+    │  • Response caching (Redis)                                  │
+    │    - Cost: +5,000 ₽/месяц (Redis memory)                     │
+    │    - Savings: ~97M ₽/месяц (30% hit rate на 260M calls)      │
+    │    - ROI: ~19,000%                                           │
+    │                                                              │
+    │  • Model routing (Lite vs Pro)                               │
+    │    - Cost: +50,000 ₽ (ML classifier + engineering)           │
+    │    - Savings: ~160M ₽/месяц (49% savings)                    │
+    │    - ROI: ~320,000%                                          │
+    │                                                              │
+    │  • Prompt optimization                                       │
+    │    - Cost: ~100,000 ₽ (engineering time, one-time)           │
+    │    - Savings: ~65M ₽/месяц (20% savings)                     │
+    │    - ROI: ~65,000%                                           │
+    │                                                              │
+    │  • Batch API для async                                        │
+    │    - Cost: ~200,000 ₽ (engineering)                          │
+    │    - Savings: ~50M ₽/месяц (на 40% асинхронного трафика)     │
+    │    - ROI: ~25,000%                                           │
+    │                                                              │
+    ├──────────────────────────────────────────────────────────────┤
+    │                                                              │
+    │  ❌ Низкий ROI (не делать):                                   │
+    │                                                              │
+    │  • Переписать gateway на Rust                                │
+    │    - Cost: ~2,000,000 ₽ (engineering)                        │
+    │    - Savings: ~15,000 ₽/месяц (compute с 22,500 до 7,500)    │
+    │    - ROI: 0.75% / год                                        │
+    │                                                              │
+    │  • Оптимизировать PII regex                                  │
+    │    - Cost: ~500,000 ₽ (engineering)                          │
+    │    - Savings: ~2,000 ₽/месяц (меньше CPU pods)               │
+    │    - ROI: 4.8% / год                                         │
+    │                                                              │
+    │  • Уменьшить PostgreSQL hot storage                          │
+    │    - Cost: ~300,000 ₽ (engineering)                          │
+    │    - Savings: ~3,000 ₽/месяц                                 │
+    │    - ROI: 12% / год                                          │
+    │                                                              │
+    └──────────────────────────────────────────────────────────────┘
+```
+
+#### Cost tier breakdown by C4 layer
+
+```
+    ┌──────────────────────────────────────────────────────────────┐
+    │                                                              │
+    │  C4 Layer         Components         % total cost            │
+    │  ─────────        ──────────         ────────────            │
+    │                                                              │
+    │  Client Side      AI Client          0% (клиент платит)      │
+    │                                                              │
+    │  Gateway          MCP Gateway        0.007%                  │
+    │                   SPIRE Agent        (входит в SPIRE Server) │
+    │                                                              │
+    │  Backend          Redis              0.006%                  │
+    │                   PostgreSQL         0.014%                  │
+    │                   Vault              0.009%                  │
+    │                   S3 WORM            0.011%                  │
+    │                   SPIRE Server       0.008%                  │
+    │                   Observability      0.009%                  │
+    │                                                              │
+    │  External         Networking         0.045%                  │
+    │                   LLM API            99.5%   ⚠️              │
+    │                                                              │
+    │  ─────────────────────────────────────────────────────────    │
+    │  TOTAL                               100%                   │
+    │                                                              │
+    │  Backend (infra):                    ~0.06%                  │
+    │  Gateway (compute):                  ~0.007%                 │
+    │  Networking:                         ~0.045%                 │
+    │  LLM:                                ~99.5%  ⚠️              │
+    │                                                              │
+    └──────────────────────────────────────────────────────────────┘
+```
+
+### 2.4. Поток запроса tools/call
 
 ```
     ┌─────────────────────────────────────────────────────────────┐
@@ -327,7 +645,7 @@ MCP Gateway предназначен для:
     └─────────────────────────────────────────────────────────────┘
 ```
 
-### 2.4. Слои доверия (Trust Boundaries)
+### 2.5. Слои доверия (Trust Boundaries)
 
 ```
     ┌──────────────────────────────────────────────────────────────┐
@@ -364,12 +682,14 @@ MCP Gateway предназначен для:
     │                                                              │
     ├──────────────────────────────────────────────────────────────┤
     │                                                              │
-    │  Zone 3: Upstream (External)                                 │
-    │  ───────────────────────────                                 │
+    │  Zone 3: Upstream (External, UNTRUSTED)                      │
+    │  ───────────────────────────────────────                     │
     │                                                              │
-    │  • LLM API (OpenAI, Anthropic, Ollama)                       │
+    │  • LLM API (GigaChat, YandexGPT, Ollama)                     │
     │  • MCP Servers (tools, resources)                            │
     │  • Legacy Systems (1C, SAP, ЕИС)                             │
+    │                                                              │
+    │  ⚠ Responses considered UNTRUSTED INPUT (prompt injection)   │
     │                                                              │
     │  Trust boundary: HTTPS + API key + rate limit + breaker      │
     │                                                              │
@@ -431,6 +751,7 @@ MCP Gateway предназначен для:
     │ 0007 │ MCP protocol transport      │ TBD                         │
     │ 0008 │ Observability stack         │ TBD                         │
     │ 0009 │ Deployment / Helm           │ TBD                         │
+    │ 0010 │ FinOps / cost attribution   │ TBD                         │
     └──────┴─────────────────────────────┴─────────────────────────────┘
 ```
 
@@ -465,7 +786,7 @@ MCP Gateway предназначен для:
     ├──────────────────────────────────────────────────────────────┤
     │                                                              │
     │  • PII в промптах (emails, телефоны, SSN, IBAN, ФИО)         │
-    │  • API-ключи upstream (OpenAI, Anthropic)                    │
+    │  • API-ключи upstream (GigaChat, YandexGPT)                  │
     │  • HMAC-ключи audit log                                      │
     │  • SPIFFE SVID (сертификаты identity)                        │
     │  • Tenant config (rate limits, upstream endpoints)           │
@@ -474,32 +795,47 @@ MCP Gateway предназначен для:
     └──────────────────────────────────────────────────────────────┘
 
     ┌──────────────────────────────────────────────────────────────┐
-    │  Угрозы (по STRIDE):                                         │
+    │  Угрозы (по STRIDE) — 25 идентифицировано:                   │
     ├──────────────────────────────────────────────────────────────┤
     │                                                              │
-    │  S — Spoofing                                                │
-    │    T-01: Подмена SPIFFE ID                                   │
-    │    T-02: Подмена JWT                                         │
-    │    T-03: Подмена tenant_id через X-Tenant-ID header          │
+    │  S — Spoofing (4)                                            │
+    │    S-01: Подмена SPIFFE ID                                   │
+    │    S-02: Подмена JWT                                         │
+    │    S-03: Подмена tenant_id                                   │
+    │    S-04: Подмена gateway под'а                               │
     │                                                              │
-    │  T — Tampering                                               │
-    │    T-04: Модификация audit log в БД (DBA)                    │
-    │    T-05: Модификация root hash publication                   │
+    │  T — Tampering (6)                                           │
+    │    T-01: MITM modification                                   │
+    │    T-02: SQL injection + audit tampering                     │
+    │    T-03: Audit log tampering (DBA)                           │
+    │    T-04: Redis state tampering                               │
+    │    T-05: S3 root hash tampering                              │
+    │    T-06: MITM on upstream                                    │
     │                                                              │
-    │  R — Repudiation                                             │
-    │    T-06: Отрицание факта вызова                              │
+    │  R — Repudiation (2)                                         │
+    │    R-01: Repudiation of action                               │
+    │    R-02: Repudiation of config change                        │
     │                                                              │
-    │  I — Information Disclosure                                  │
-    │    T-07: Утечка PII в upstream LLM                           │
-    │    T-08: Cross-tenant data access                            │
-    │    T-09: Утечка API-ключей в логах                           │
+    │  I — Information Disclosure (7)                              │
+    │    I-01: PII leak to LLM                                     │
+    │    I-02: API key leakage                                     │
+    │    I-03: Cross-tenant data access                            │
+    │    I-04: PII leak through logs                               │
+    │    I-05: Memory dump extraction                              │
+    │    I-06: Prompt Injection (indirect) — AI-specific           │
+    │    I-07: LLM Response Poisoning                              │
     │                                                              │
-    │  D — Denial of Service                                       │
-    │    T-10: Noisy neighbor (runaway loop)                       │
-    │    T-11: Cascading failure при отказе upstream               │
+    │  D — Denial of Service (4)                                   │
+    │    D-01: Noisy neighbor                                      │
+    │    D-02: Cascading failure                                   │
+    │    D-03: ReDoS                                               │
+    │    D-04: Slowloris + reconnection storm                      │
     │                                                              │
-    │  E — Elevation of Privilege                                  │
-    │    T-12: Tenant A получает доступ к ресурсам Tenant B        │
+    │  E — Elevation of Privilege (4)                              │
+    │    E-01: Cross-tenant escalation                             │
+    │    E-02: Container escape                                    │
+    │    E-03: ServiceAccount compromise                           │
+    │    E-04: Vault privilege escalation                          │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
 ```
@@ -510,16 +846,30 @@ MCP Gateway предназначен для:
     ┌──────────────────┬──────────────────────────────────────────┐
     │ Угроза           │ Митигация                                │
     ├──────────────────┼──────────────────────────────────────────┤
-    │ T-01, T-02       │ ADR-0001: SPIFFE/SPIRE + JWT validation  │
-    │ T-03             │ ADR-0004: X-Tenant-ID только в dev       │
-    │ T-04             │ ADR-0002: HMAC hash-chain + append-only  │
-    │ T-05             │ ADR-0002: off-site root hash (S3 WORM)   │
-    │ T-06             │ ADR-0002: подпись actor (SPIFFE ID)      │
-    │ T-07             │ ADR-0006 (TBD): PII redaction pipeline   │
-    │ T-08, T-12       │ ADR-0004: tenant_id isolation + allowlist│
-    │ T-09             │ Secret management (Vault) + no-log policy│
-    │ T-10             │ ADR-0003: per-tenant rate limiting       │
-    │ T-11             │ ADR-0005: per-tenant circuit breaker     │
+    │ S-01, S-02       │ ADR-0001: SPIFFE/SPIRE + JWT validation  │
+    │ S-03             │ ADR-0004: X-Tenant-ID только в dev       │
+    │ S-04             │ ADR-0001: WorkloadAttestor + image SHA   │
+    │ T-01, T-06       │ ADR-0001: mTLS TLS 1.3                   │
+    │ T-02             │ ADR-0002: parameterized queries + RLS    │
+    │ T-03             │ ADR-0002: HMAC hash-chain + append-only  │
+    │ T-04             │ Redis AUTH + NetworkPolicy               │
+    │ T-05             │ ADR-0002: S3 Object Lock COMPLIANCE      │
+    │ R-01             │ ADR-0002: подпись actor (SPIFFE ID)      │
+    │ R-02             │ GitOps + audit config changes            │
+    │ I-01             │ ADR-0006 (TBD): PII redaction pipeline   │
+    │ I-02             │ Secret management (Vault) + no-log       │
+    │ I-03, E-01       │ ADR-0004: tenant_id isolation + allowlist│
+    │ I-04             │ No-log policy + periodic scan            │
+    │ I-05             │ ulimit -c 0 + MLOCK + zeroing buffers    │
+    │ I-06             │ FGA/OPA + tool allowlist + output check  │
+    │ I-07             │ Certificate pinning + schema validation  │
+    │ D-01             │ ADR-0003: per-tenant rate limiting       │
+    │ D-02             │ ADR-0005: per-tenant circuit breaker     │
+    │ D-03             │ RE2 (no backtracking)                    │
+    │ D-04             │ ReadTimeout + IdleTimeout + backoff      │
+    │ E-02             │ Distroless + PodSecurityStandards        │
+    │ E-03             │ automountServiceAccountToken: false      │
+    │ E-04             │ Vault AppRole + short-lived tokens       │
     └──────────────────┴──────────────────────────────────────────┘
 ```
 
@@ -576,6 +926,18 @@ MCP Gateway предназначен для:
     │  • §164.312(c) — integrity → HMAC                            │
     │  • §164.312(d) — person authentication → SPIFFE + JWT        │
     │  • §164.312(e) — transmission security → mTLS                │
+    │                                                              │
+    └──────────────────────────────────────────────────────────────┘
+
+    ┌──────────────────────────────────────────────────────────────┐
+    │  NIST SP 800-207 (Zero Trust)                                │
+    ├──────────────────────────────────────────────────────────────┤
+    │                                                              │
+    │  • §2.1 — все источники недоверенные → mTLS на всех границах│
+    │  • §2.1 — per-request authentication → JWT + SPIFFE          │
+    │  • §3.1 — dynamic policy → per-tenant config                 │
+    │  • §3.2 — continuous monitoring → rate limit + breaker       │
+    │  • §3.3 — least privilege → tenant isolation + RBAC          │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
 ```
@@ -763,8 +1125,9 @@ tenants:
       - "spiffe://mcp-gateway.local/ns/acme/sa/*"
     upstreams:
       llm:
-        provider: "openai"
-        endpoint: "https://api.openai.com/v1"
+        provider: "gigachat"
+        model: "GigaChat-Pro"
+        endpoint: "https://gigachat.devices.sberbank.ru/api/v1"
       tools:
         - "https://mcp.acme.internal"
     pii_policy: "strict"
@@ -787,8 +1150,9 @@ tenants:
       - "spiffe://mcp-gateway.local/ns/globex/sa/*"
     upstreams:
       llm:
-        provider: "anthropic"
-        endpoint: "https://api.anthropic.com/v1"
+        provider: "yandex"
+        model: "YandexGPT-Pro"
+        endpoint: "https://llm.api.cloud.yandex.net/foundationModels/v1"
     pii_policy: "gdpr"
     rate_limit:
       tools_call:
@@ -799,9 +1163,110 @@ tenants:
 
 ---
 
-## 7. Deployment
+## 7. FinOps и Unit Economics
 
-### 7.1. Kubernetes deployment
+### 7.1. Ключевые цифры
+
+```
+    ┌──────────────────────────────────────────────────────────────┐
+    │                                                              │
+    │  Baseline: 100 RPS, ~260M calls/month                        │
+    │                                                              │
+    │  Cost per 1M MCP calls (GigaChat Pro): ~1,250,570 ₽          │
+    │  Monthly cost (260M calls): ~325,650,000 ₽                   │
+    │                                                              │
+    │  Распределение:                                              │
+    │  • LLM API:          99.50%  ⚠️ (вне контроля архитектора)   │
+    │  • Networking:       0.045%                                  │
+    │  • PostgreSQL:       0.014%                                  │
+    │  • S3 WORM:          0.011%                                  │
+    │  • Vault:            0.009%                                  │
+    │  • Observability:    0.009%                                  │
+    │  • SPIRE Server:     0.008%                                  │
+    │  • Gateway compute:  0.007%                                  │
+    │  • Redis:            0.006%                                  │
+    │                                                              │
+    └──────────────────────────────────────────────────────────────┘
+```
+
+### 7.2. Ключевые выводы
+
+```
+    ┌──────────────────────────────────────────────────────────────┐
+    │                                                              │
+    │  1. LLM = 99.5% стоимости. Все архитектурные решения         │
+    │     нужно оценивать через призму влияния на LLM-вызовы.      │
+    │                                                              │
+    │  2. Инфраструктура (Redis, Postgres, Vault, SPIRE) —          │
+    │     менее 0.1% стоимости. Не оптимизировать в первую         │
+    │     очередь, если работает.                                  │
+    │                                                              │
+    │  3. Gateway compute — 0.007%. Переписывание на Rust          │
+    │     даст <0.01% экономии. Не делать.                         │
+    │                                                              │
+    │  4. Главные levers FinOps:                                    │
+    │     • Caching (30% savings, LOW complexity)                  │
+    │     • Model routing (70% savings, MEDIUM complexity)         │
+    │     • Prompt optimization (20% savings, LOW)                 │
+    │     • Batch API (50% on async, LOW)                          │
+    │                                                              │
+    │  5. Combined optimization: ~77% savings vs baseline          │
+    │     • 1,250,000 ₽ → 284,000 ₽ per 1M calls                   │
+    │                                                              │
+    └──────────────────────────────────────────────────────────────┘
+```
+
+### 7.3. Cost-driven decisions (ROI ranking)
+
+```
+    ┌──────────────────────────────────────────────────────────────┐
+    │                                                              │
+    │  ✅ Высокий ROI (делать):                                     │
+    │                                                              │
+    │  • Model routing (Lite vs Pro) ............. ROI ~320,000%   │
+    │  • Prompt optimization ..................... ROI ~65,000%    │
+    │  • Batch API для async ..................... ROI ~25,000%    │
+    │  • Response caching ........................ ROI ~19,000%    │
+    │                                                              │
+    ├──────────────────────────────────────────────────────────────┤
+    │                                                              │
+    │  ❌ Низкий ROI (не делать):                                   │
+    │                                                              │
+    │  • Переписать gateway на Rust ............... ROI ~0.75%/год │
+    │  • Оптимизировать PII regex ................. ROI ~4.8%/год  │
+    │  • Уменьшить PostgreSQL hot storage ......... ROI ~12%/год   │
+    │                                                              │
+    └──────────────────────────────────────────────────────────────┘
+```
+
+### 7.4. Per-tenant cost model
+
+```
+    ┌──────────────────────────────────────────────────────────────┐
+    │                                                              │
+    │  ┌─────────────┬────────────┬──────────────┬──────────────┐ │
+    │  │ Tier        │ Rate limit │ Volume/месяц │ Cost/месяц   │ │
+    │  ├─────────────┼────────────┼──────────────┼──────────────┤ │
+    │  │ Enterprise  │ 1000/min   │ 10M calls    │ ~12.5M ₽     │ │
+    │  │ Standard    │ 100/min    │ 1M calls     │ ~1.25M ₽     │ │
+    │  │ Free        │ 10/min     │ 100k calls   │ ~125k ₽      │ │
+    │  └─────────────┴────────────┴──────────────┴──────────────┘ │
+    │                                                              │
+    │  Pricing strategy (пример):                                  │
+    │  • Enterprise: 15M ₽/месяц (20% margin)                      │
+    │  • Standard: 1.5M ₽/месяц (20% margin)                       │
+    │  • Free: 0 ₽ (loss leader для adoption)                      │
+    │                                                              │
+    └──────────────────────────────────────────────────────────────┘
+```
+
+Полный FinOps-анализ — в `docs/reliability/capacity-planning.md`.
+
+---
+
+## 8. Deployment
+
+### 8.1. Kubernetes deployment
 
 ```
     ┌──────────────────────────────────────────────────────────────┐
@@ -854,7 +1319,7 @@ tenants:
     └──────────────────────────────────────────────────────────────┘
 ```
 
-### 7.2. Helm chart структура
+### 8.2. Helm chart структура
 
 ```
     deploy/helm/mcp-gateway/
@@ -876,7 +1341,7 @@ tenants:
         └── serviceentry.yaml        # Istio (optional)
 ```
 
-### 7.3. Secret management
+### 8.3. Secret management
 
 ```
     ┌──────────────────────────────────────────────────────────────┐
@@ -905,18 +1370,18 @@ tenants:
     └──────────────────────────────────────────────────────────────┘
 ```
 
-### 7.4. Multi-cluster deployment
+### 8.4. Multi-cluster deployment
 
 ```
     ┌──────────────────────────────────────────────────────────────┐
     │                                                              │
-    │  Cluster 1 (prod-eu)         Cluster 2 (prod-ru)             │
+    │  Cluster 1 (prod-ru)         Cluster 2 (prod-eu)             │
     │  ┌─────────────────┐         ┌─────────────────┐             │
     │  │ MCP Gateway     │         │ MCP Gateway     │             │
     │  │                 │         │                 │             │
     │  │ SPIFFE:         │         │ SPIFFE:         │             │
     │  │ trust-domain:   │◄────────┤ trust-domain:   │             │
-    │  │ eu.example.com  │ SPIFFE  │ ru.example.com  │             │
+    │  │ ru.example.com  │ SPIFFE  │ eu.example.com  │             │
     │  │                 │Federation│                │             │
     │  └─────────────────┘         └─────────────────┘             │
     │                                                              │
@@ -930,9 +1395,9 @@ tenants:
 
 ---
 
-## 8. Observability
+## 9. Observability
 
-### 8.1. Three Pillars
+### 9.1. Three Pillars
 
 ```
     ┌──────────────────────────────────────────────────────────────┐
@@ -951,10 +1416,11 @@ tenants:
     │  • Errors: см. выше                                          │
     │                                                              │
     │  Business metrics:                                           │
-    │  • llm_tokens_total{tenant,provider}                         │
-    │  • llm_cost_usd_total{tenant,provider}                       │
+    │  • llm_tokens_total{tenant,provider,model}                   │
+    │  • llm_cost_rub_total{tenant,provider,model}                 │
     │  • rate_limit_denied_total{tenant,method}                    │
     │  • circuit_state{tenant,upstream}                            │
+    │  • cache_hits_total{tenant}                                  │
     │                                                              │
     │  Logs (structured JSON → Loki)                               │
     │  ─────────────────────────────                               │
@@ -976,7 +1442,7 @@ tenants:
     └──────────────────────────────────────────────────────────────┘
 ```
 
-### 8.2. Dashboards
+### 9.2. Dashboards
 
 ```
     ┌──────────────────────────────────────────────────────────────┐
@@ -1004,11 +1470,12 @@ tenants:
     │  • LLM tokens per tenant                                     │
     │  • LLM cost per tenant (FinOps)                              │
     │  • Audit log write rate                                      │
+    │  • Cache hit rate per tenant                                 │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
 ```
 
-### 8.3. Алерты
+### 9.3. Алерты
 
 ```
     ┌──────────────────────────────────────────────────────────────┐
@@ -1022,6 +1489,7 @@ tenants:
     │  • SPIRE agent недоступен >2m                                │
     │  • Redis недоступен >1m (для enterprise тенантов)            │
     │  • HMAC key rotation failed                                  │
+    │  • Daily cost >2x baseline (FinOps spike)                    │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
 
@@ -1036,15 +1504,17 @@ tenants:
     │  • Audit queue full                                          │
     │  • SVID TTL <15m                                             │
     │  • Breaker registry size anomaly                             │
+    │  • Tenant cost >100% budget                                  │
+    │  • Cache hit rate <20%                                       │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 9. Roadmap и ограничения
+## 10. Roadmap и ограничения
 
-### 9.1. Roadmap
+### 10.1. Roadmap
 
 ```
     ┌──────────────────────────────────────────────────────────────┐
@@ -1053,7 +1523,10 @@ tenants:
     │  ─────────────────────────────                               │
     │  • Структура репозитория                                     │
     │  • 5 ADR (0001-0005)                                         │
-    │  • Blueprint                                                 │
+    │  • Blueprint v2 (с FinOps C4)                                │
+    │  • Threat Model v2 (25 угроз)                                │
+    │  • SLO.md                                                    │
+    │  • Capacity Planning (FinOps с российскими моделями)         │
     │  • CI (GitHub Actions)                                       │
     │                                                              │
     │  🚧 Phase 2: Core (In Progress)                              │
@@ -1092,7 +1565,7 @@ tenants:
     └──────────────────────────────────────────────────────────────┘
 ```
 
-### 9.2. Ограничения reference implementation
+### 10.2. Ограничения reference implementation
 
 **Что НЕ реализовано в reference implementation:**
 
@@ -1119,10 +1592,16 @@ tenants:
     │                                                              │
     │  • Penetration testing не проводился                         │
     │                                                              │
+    │  • Цены на LLM (GigaChat, YandexGPT) даны как reference,     │
+    │    требуют проверки по актуальным прайс-листам               │
+    │                                                              │
+    │  • FinOps-расчёты сделаны для baseline 100 RPS;              │
+    │    при других нагрузках требуется пересчёт                    │
+    │                                                              │
     └──────────────────────────────────────────────────────────────┘
 ```
 
-### 9.3. Что делать перед production
+### 10.3. Что делать перед production
 
 ```
     ┌──────────────────────────────────────────────────────────────┐
@@ -1153,14 +1632,20 @@ tenants:
     │  [ ] DPIA (Data Protection Impact Assessment)                │
     │  [ ] Regulatory notification procedures                      │
     │                                                              │
+    │  FinOps:                                                     │
+    │  [ ] Budget per tenant согласован                            │
+    │  [ ] Cost alerts настроены                                   │
+    │  [ ] Optimization pipeline (caching, routing)                │
+    │  [ ] Cost attribution per tenant работает                    │
+    │                                                              │
     └──────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 10. Ссылки
+## 11. Ссылки
 
-### 10.1. Architecture Decision Records
+### 11.1. Architecture Decision Records
 
 ```
     docs/adr/
@@ -1171,7 +1656,7 @@ tenants:
     └── 0005-circuit-breaker-library-choice.md
 ```
 
-### 10.2. Дополнительная документация
+### 11.2. Дополнительная документация
 
 ```
     docs/
@@ -1180,18 +1665,18 @@ tenants:
     │   ├── trust-boundaries.md   # Trust boundaries (детально)
     │   └── data-flow.md          # Data flow (детально)
     ├── security/
-    │   ├── threat-model.md       # STRIDE model
+    │   ├── threat-model.md       # STRIDE model (25 угроз)
     │   ├── compliance-mapping.md # 152-ФЗ, GDPR, PCI DSS, HIPAA
     │   ├── key-management.md     # Управление HMAC keys (TBD)
     │   └── incident-response.md  # Runbook (TBD)
     ├── reliability/
     │   ├── slo.md                # SLI / SLO / error budget
-    │   ├── runbook.md            # Ops runbook
-    │   └── capacity-planning.md  # FinOps, cost analysis (TBD)
+    │   ├── capacity-planning.md  # FinOps, cost per 1M MCP calls
+    │   └── runbook.md            # Ops runbook (TBD)
     └── blueprint.md              # Этот документ
 ```
 
-### 10.3. Индустриальные стандарты и best practices
+### 11.3. Индустриальные стандарты и best practices
 
 - [NIST SP 800-207: Zero Trust Architecture](https://csrc.nist.gov/publications/detail/sp/800-207/final)
 - [NIST SP 800-92: Guide to Computer Security Log Management](https://csrc.nist.gov/publications/detail/sp/800-92/final)
@@ -1203,8 +1688,110 @@ tenants:
 - [Google SRE Book](https://sre.google/sre-book/table-of-contents/)
 - [Martin Fowler: Circuit Breaker](https://martinfowler.com/bliki/CircuitBreaker.html)
 - [The Twelve-Factor App](https://12factor.net/)
+- [FinOps Foundation](https://www.finops.org/)
 
-### 10.4. Связанные проекты
+### 11.4. Связанные проекты
 
 - [agentic-orchestration-platform](https://github.com/realrvs/agentic-orchestration-platform) — multi-agent платформа для enterprise
 - [enterprise-agent-orchestration-blueprint](https://github.com/realrvs/enterprise-agent-orchestration-blueprint) — архитектурный blueprint
+
+---
+
+## Приложение A: Словарь терминов
+
+```
+    ┌──────────────────┬──────────────────────────────────────────┐
+    │ Термин           │ Определение                              │
+    ├──────────────────┼──────────────────────────────────────────┤
+    │ ADR              │ Architecture Decision Record — документ,  │
+    │                  │ фиксирующий архитектурное решение         │
+    │                  │                                          │
+    │ MCP              │ Model Context Protocol — открытый        │
+    │                  │ стандарт для AI-агентов                  │
+    │                  │                                          │
+    │ SPIFFE           │ Secure Production Identity Framework     │
+    │                  │ for Everyone — стандарт identity         │
+    │                  │                                          │
+    │ SVID             │ SPIFFE Verifiable Identity Document —    │
+    │                  │ X.509 сертификат с SPIFFE ID в SAN       │
+    │                  │                                          │
+    │ SPIRE            │ SPIFFE Runtime Environment — реализация  │
+    │                  │ SPIFFE                                   │
+    │                  │                                          │
+    │ HMAC             │ Hash-based Message Authentication Code — │
+    │                  │ симметричная подпись                     │
+    │                  │                                          │
+    │ Tenant           │ Организационная единица (клиент, команда,│
+    │                  │ пользователь) со своими политиками       │
+    │                  │                                          │
+    │ Circuit Breaker  │ Паттерн отказоустойчивости: блокирует    │
+    │                  │ запросы при деградации upstream          │
+    │                  │                                          │
+    │ Rate Limiting    │ Ограничение частоты запросов             │
+    │                  │                                          │
+    │ SLO              │ Service Level Objective — целевой уровень│
+    │                  │ надёжности                               │
+    │                  │                                          │
+    │ SLI              │ Service Level Indicator — измеряемый     │
+    │                  │ показатель                               │
+    │                  │                                          │
+    │ PII              │ Personally Identifiable Information —    │
+    │                  │ персональные данные                      │
+    │                  │                                          │
+    │ FinOps           │ Практика управления затратами на облако  │
+    │                  │ и LLM                                    │
+    │                  │                                          │
+    │ ROI              │ Return on Investment — окупаемость       │
+    │                  │ инвестиций                               │
+    │                  │                                          │
+    │ TCO              │ Total Cost of Ownership — совокупная     │
+    │                  │ стоимость владения                       │
+    │                  │                                          │
+    └──────────────────┴──────────────────────────────────────────┘
+```
+
+---
+
+## Приложение B: Changelog
+
+```
+    ┌────────────┬──────────────┬──────────────────────────────────┐
+    │ Version    │ Date         │ Changes                          │
+    ├────────────┼──────────────┼──────────────────────────────────┤
+    │ 1.0        │ 2026-09-23   │ Initial blueprint                │
+    │            │              │ • 5 ADR included                 │
+    │            │              │ • C4 diagrams (context + container)│
+    │            │              │ • Request flow for tools/call    │
+    │            │              │ • Threat model summary           │
+    │            │              │ • Compliance mapping             │
+    │            │              │ • SLO summary                    │
+    │            │              │ • Deployment architecture        │
+    │            │              │                                  │
+    │ 2.0        │ 2026-09-24   │ Major update:                    │
+    │            │              │ • Новый раздел 2.3: C4 Container  │
+    │            │              │   with Cost Annotations          │
+    │            │              │ • Cost summary table             │
+    │            │              │ • ROI ranking (do / don't do)    │
+    │            │              │ • Cost tier by C4 layer          │
+    │            │              │ • Новый раздел 7: FinOps и Unit  │
+    │            │              │   Economics                      │
+    │            │              │ • Российские LLM (GigaChat,      │
+    │            │              │   YandexGPT, DeepSeek, Ollama)   │
+    │            │              │ • Все цены в рублях РФ           │
+    │            │              │ • Threat model обновлён (25 угроз)│
+    │            │              │ • Compliance + NIST 800-207      │
+    └────────────┴──────────────┴──────────────────────────────────┘
+```
+
+---
+
+## Приложение C: Contributing
+
+Это reference implementation. Для внесения изменений:
+
+1. **Изменения архитектуры** → новый ADR или обновление существующего
+2. **Изменения в blueprint** → PR с обоснованием
+3. **Изменения в коде** → PR с tests + обновление ADR при необходимости
+
+**Ключевой принцип:** каждое значимое решение фиксируется в ADR.
+Blueprint — производный документ, ссылающийся на ADR.
