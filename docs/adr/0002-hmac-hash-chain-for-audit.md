@@ -977,4 +977,4 @@ immutable storage (WORM), но:
 
 - [ADR-0001: SPIFFE/SPIRE для mTLS](0001-use-spiffe-for-mtls.md) — SVID идентифицирует actor в audit-записях.
 - [ADR-0004: tenant_id в context](0004-tenant-id-in-context.md) — tenant_id обязателен в каждой audit-записи.
-- ADR-0006 (TBD): Key management для HMAC-ключей и SVID — управление секретами через Vault.
+- ADR-0010 (TBD): Key management для HMAC-ключей и SVID — управление секретами через Vault.

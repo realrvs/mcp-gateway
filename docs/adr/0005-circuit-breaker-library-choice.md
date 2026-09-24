@@ -887,4 +887,4 @@ Netflix Hystrix port на Go.
 - [ADR-0002: HMAC hash-chain для audit log](0002-hmac-hash-chain-for-audit.md) — state changes логируются в audit
 - [ADR-0003: Redis для rate limiting](0003-redis-for-rate-limiting.md) — rate limit + breaker = complementary защита
 - [ADR-0004: tenant_id в context](0004-tenant-id-in-context.md) — tenant_id — ключ для per-tenant breaker'ов
-- ADR-0006 (TBD): PII redaction — вызывается перед upstream, работает с breaker
+- ADR-0009 (TBD): PII redaction — вызывается перед upstream, работает с breaker

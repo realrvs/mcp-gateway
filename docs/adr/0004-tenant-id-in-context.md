@@ -141,7 +141,7 @@ func MustFromContext(ctx context.Context) TenantID {
     │   │ RL  │ │Audit│      │ PII │      │ CB  │      │MCP  │   │
     │   │     │ │     │      │     │      │     │      │     │   │
     │   │ ADR-│ │ ADR-│      │ ADR-│      │ ADR-│      │ ADR-│   │
-    │   │ 0003│ │ 0002│      │ 0006│      │ 0005│      │ 0007│   │
+    │   │ 0003│ │ 0002│      │ 0009│      │ 0005│      │ 0006│   │
     │   └─────┘ └─────┘      └─────┘      └─────┘      └─────┘   │
     │       │       │            │            │            │       │
     │       └───────┴────────────┴────────────┴────────────┘       │
@@ -256,7 +256,7 @@ func (h *ToolCallHandler) Handle(ctx context.Context, req *ToolCallRequest) (*Re
         return nil, err
     }
 
-    // PII redaction (ADR-0006)
+    // PII redaction (ADR-0009)
     redacted, err := h.piiRedactor.Redact(ctx, tenantID, req.Args)
     if err != nil {
         return nil, err

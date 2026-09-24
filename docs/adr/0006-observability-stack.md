@@ -304,7 +304,7 @@ PII, breaker, audit, upstream, response) и взаимодействует с **
     │                                                              │
     │  PII handling:                                               │
     │  • Prompts хранятся ТОЛЬКО в redacted виде                   │
-    │  • Placeholders <EMAIL_1>, <PHONE_2> (см. ADR-0006 TBD)      │
+    │  • Placeholders <EMAIL_1>, <PHONE_2> (см. ADR-0009 TBD)      │
     │  • Retention: 30 дней                                        │
     │  • Access: RBAC, audit log всех reads                        │
     │                                                              │
