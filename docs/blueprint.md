@@ -232,7 +232,7 @@ MCP Gateway предназначен для:
     │   │   2. JWT validation                                       │    │
     │   │   3. Tenant Resolver       [ADR-0004]                    │    │
     │   │   4. Rate Limiter          [ADR-0003]                    │    │
-    │   │   5. PII Redactor          (TBD ADR-0006)                │    │
+    │   │   5. PII Redactor          (TBD ADR-0009)                │    │
     │   │   6. Circuit Breaker       [ADR-0005]                    │    │
     │   │   7. Audit Logger          [ADR-0002]                    │    │
     │   │   8. Upstream Client                                      │    │
@@ -613,7 +613,7 @@ observability) **не зависят** от количества вызовов 
     │      ├─ allowed=1 → continue, allowed=0 → 429 + Retry-After │
     │      └─ Headers: X-RateLimit-Limit/Remaining/Reset          │
     │                                                             │
-    │   6. PII Redaction                     (TBD ADR-0006)       │
+    │   6. PII Redaction                     (TBD ADR-0009)       │
     │      ├─ Detect: email, phone, SSN, IBAN, credit card        │
     │      ├─ Mask: <EMAIL_1>, <PHONE_2>                          │
     │      └─ Store mapping in request-scoped memory              │
@@ -738,6 +738,14 @@ observability) **не зависят** от количества вызовов 
     │      │                             │ • Per-tenant × per-upstream │
     │      │                             │ • Retry внутри breaker'а    │
     │      │                             │ • 4xx не считается failure  │
+    ├──────┼─────────────────────────────┼─────────────────────────────┤
+    │ 0006 │ Observability               │ Unified observability stack │
+    │      │                             │ • OpenTelemetry (unified)   │
+    │      │                             │ • Prometheus (metrics)      │
+    │      │                             │ • Loki (logs)               │
+    │      │                             │ • Tempo (traces)            │
+    │      │                             │ • Langfuse (LLM-specific)   │
+    │      │                             │ • Tail-based sampling       │
     └──────┴─────────────────────────────┴─────────────────────────────┘
 ```
 
@@ -747,11 +755,11 @@ observability) **не зависят** от количества вызовов 
     ┌──────┬─────────────────────────────┬─────────────────────────────┐
     │ ADR  │ Тема                        │ Статус                      │
     ├──────┼─────────────────────────────┼─────────────────────────────┤
-    │ 0006 │ PII redaction               │ TBD                         │
-    │ 0007 │ MCP protocol transport      │ TBD                         │
-    │ 0008 │ Observability stack         │ TBD                         │
-    │ 0009 │ Deployment / Helm           │ TBD                         │
-    │ 0010 │ FinOps / cost attribution   │ TBD                         │
+    │ 0006 │ Observability stack         │ ✅ Accepted                 │
+    │ 0007 │ Prompt A/B testing          │ 🚧 In Progress              │
+    │ 0008 │ Cost attribution per agent  │ 🚧 In Progress              │
+    │ 0009 │ PII redaction               │ 📋 Planned                  │
+    │ 0010 │ Key management (HMAC+SVID)  │ 📋 Planned                  │
     └──────┴─────────────────────────────┴─────────────────────────────┘
 ```
 
@@ -856,7 +864,7 @@ observability) **не зависят** от количества вызовов 
     │ T-05             │ ADR-0002: S3 Object Lock COMPLIANCE      │
     │ R-01             │ ADR-0002: подпись actor (SPIFFE ID)      │
     │ R-02             │ GitOps + audit config changes            │
-    │ I-01             │ ADR-0006 (TBD): PII redaction pipeline   │
+    │ I-01             │ ADR-0009 (TBD): PII redaction pipeline   │
     │ I-02             │ Secret management (Vault) + no-log       │
     │ I-03, E-01       │ ADR-0004: tenant_id isolation + allowlist│
     │ I-04             │ No-log policy + periodic scan            │
@@ -893,7 +901,7 @@ observability) **не зависят** от количества вызовов 
     │  GDPR (EU, General Data Protection Regulation)               │
     ├──────────────────────────────────────────────────────────────┤
     │                                                              │
-    │  • Art. 5 — принципы обработки → PII redaction (ADR-0006)    │
+    │  • Art. 5 — принципы обработки → PII redaction (ADR-0009)    │
     │  • Art. 25 — privacy by design → архитектурное решение       │
     │  • Art. 30 — Records of Processing → audit log (ADR-0002)    │
     │  • Art. 32 — security of processing → mTLS + audit + PII     │
@@ -1086,7 +1094,7 @@ observability) **не зависят** от количества вызовов 
     │   Rate limit  Key: rl:{tenant}:method:window (ADR-0003)      │
     │   Breaker     Key: {tenant}:{upstream} (ADR-0005)            │
     │   Audit       Column tenant_id + RLS (ADR-0002)              │
-    │   PII         Policy per tenant (ADR-0006 TBD)               │
+    │   PII         Policy per tenant (ADR-0009 TBD)               │
     │   Upstream    Registry: tenant → endpoint mapping            │
     │   Metrics     Label tenant в Prometheus                      │
     │   Logs        Structured logging с tenant_id                 │
@@ -1540,7 +1548,7 @@ tenants:
     │                                                              │
     │  📋 Phase 3: Security & Compliance                           │
     │  ───────────────────────────────────                         │
-    │  • PII redaction pipeline (ADR-0006)                         │
+    │  • PII redaction pipeline (ADR-0009)                         │
     │  • Threat model + compliance mapping                         │
     │  • Key management runbook                                    │
     │  • Incident response runbook                                 │
