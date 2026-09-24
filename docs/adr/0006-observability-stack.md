@@ -287,7 +287,7 @@ PII, breaker, audit, upstream, response) и взаимодействует с **
     │  • Full prompt/response (для отладки и A/B testing)          │
     │  • LLM-specific metrics (tokens, cost, quality scores)       │
     │  • Evaluation (human-in-the-loop feedback)                   │
-    │  • Prompt A/B testing (см. ADR-0009)                         │
+    │  • Prompt A/B testing (см. ADR-0007)                         │
     │                                                              │
     │  Что трекаем:                                                │
     │                                                              │
@@ -328,7 +328,7 @@ PII, breaker, audit, upstream, response) и взаимодействует с **
     │                                                              │
     │  Решение:                                                    │
     │                                                              │
-    │  1. agent_id как обязательный атрибут (см. ADR-0010 TBD)     │
+    │  1. agent_id как обязательный атрибут (см. ADR-0008 TBD)     │
     │                                                              │
     │  2. Метрики:                                                 │
     │     mcp_llm_cost_rub_total{tenant, agent, provider, model}   │
@@ -365,7 +365,7 @@ PII, breaker, audit, upstream, response) и взаимодействует с **
     │  ├── trace_id = abc123 (OTel)                                │
     │  ├── span_id = def456 (OTel)                                 │
     │  ├── tenant_id = acme (ADR-0004)                             │
-    │  ├── agent_id = agent-x (ADR-0010 TBD)                       │
+    │  ├── agent_id = agent-x (ADR-0008 TBD)                       │
     │  ├── request_id = req-789                                    │
     │  │                                                           │
     │  ▼                                                           │
@@ -652,7 +652,7 @@ PII, breaker, audit, upstream, response) и взаимодействует с **
     │  Симптом: LLM traces не сохраняются                          │
     │                                                              │
     │  Влияние:                                                    │
-    │  • Нет данных для A/B testing (ADR-0009)                     │
+    │  • Нет данных для A/B testing (ADR-0007)                     │
     │  • Нет детальных prompts/responses для отладки               │
     │  • Cost tracking задерживается (но не теряется — метрики     │
     │    в Prometheus работают независимо)                         │
@@ -921,4 +921,4 @@ PII, breaker, audit, upstream, response) и взаимодействует с **
 - [ADR-0004: tenant_id в context](0004-tenant-id-in-context.md) — tenant_id в spans, logs, metrics
 - [ADR-0005: gobreaker для circuit breaker](0005-circuit-breaker-library-choice.md) — breaker state metrics
 - [ADR-0007: Prompt A/B testing via Langfuse](0007-prompt-ab-testing.md) (TBD) — использует Langfuse из этого ADR
-- [ADR-0009: Cost attribution per agent](0009-cost-attribution-per-agent.md) (TBD) — использует metrics layer из этого ADR
+- [ADR-0008: Cost attribution per agent](0008-cost-attribution-per-agent.md) (TBD) — использует metrics layer из этого ADR
