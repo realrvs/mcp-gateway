@@ -1,8 +1,8 @@
 # MCP Gateway: Production Blueprint
 
 - **Status:** Living Document
-- **Version:** 2.0
-- **Last Updated:** 2026-09-24
+- **Version:** 3.0
+- **Last Updated:** 2026-09-25
 - **Author:** Roman Sokolov (Architect)
 - **Audience:** Architects, CTO, InfoSec, SRE, Product Owners, Finance
 
@@ -12,11 +12,6 @@
 
 1. [Проблема и контекст](#1-проблема-и-контекст)
 2. [Целевая архитектура](#2-целевая-архитектура)
-   - 2.1. [C4 Context](#21-c4-context-уровень-1)
-   - 2.2. [C4 Container](#22-c4-container-уровень-2)
-   - 2.3. [C4 Container with Cost Annotations](#23-c4-container-with-cost-annotations)
-   - 2.4. [Поток запроса tools/call](#24-поток-запроса-toolscall)
-   - 2.5. [Слои доверия](#25-слои-доверия-trust-boundaries)
 3. [Ключевые архитектурные решения](#3-ключевые-архитектурные-решения)
 4. [Безопасность и compliance](#4-безопасность-и-compliance)
 5. [Надёжность и SLO](#5-надёжность-и-slo)
@@ -72,10 +67,9 @@ MCP-запросов от клиента к upstream. Она **работала 
     │  В production:                                               │
     │  • Нужна mTLS с проверяемой identity workload'ов             │
     │  • Identity должна быть переносима между средами             │
-    │    (K8s, bare-metal, on-prem)                                │
     │  • Автоматическая ротация сертификатов без рестарта          │
     │                                                              │
-    │  Решение: SPIFFE/SPIRE (см. ADR-0001)                        │
+    │  Решение: SPIFFE/SPIRE (ADR-0001)                            │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
 
@@ -91,7 +85,8 @@ MCP-запросов от клиента к upstream. Она **работала 
     │  • Audit log не должен быть подделываемым                    │
     │  • Соответствие 152-ФЗ, GDPR, PCI DSS, HIPAA                 │
     │                                                              │
-    │  Решение: HMAC hash-chain audit (ADR-0002) + PII redaction   │
+    │  Решение: HMAC hash-chain (ADR-0002) + PII redaction         │
+    │  (ADR-0009) + Key management (ADR-0010)                      │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
 
@@ -124,24 +119,26 @@ MCP-запросов от клиента к upstream. Она **работала 
     │  • Distributed tracing                                       │
     │  • Алерты на деградацию                                      │
     │                                                              │
-    │  Решение: SLO (см. раздел 5) + Prometheus + OpenTelemetry    │
+    │  Решение: SLO (раздел 5) + unified observability             │
+    │  stack (ADR-0006)                                            │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
 
     ┌──────────────────────────────────────────────────────────────┐
-    │  Проблема 5: FinOps                                          │
+    │  Проблема 5: FinOps и LLM-Ops                                │
     ├──────────────────────────────────────────────────────────────┤
     │                                                              │
-    │  PoC: нет учёта затрат на LLM                                │
+    │  PoC: нет учёта затрат, нет управления промптами             │
     │                                                              │
     │  В production:                                               │
     │  • Каждый вызов LLM стоит денег (₽/1k токенов)               │
-    │  • Нужен per-tenant billing                                  │
+    │  • Нужен per-tenant AND per-agent billing                    │
     │  • Нужны лимиты для контроля затрат                          │
-    │  • Стоимость на 1M MCP calls для capacity planning           │
+    │  • Промпты эволюционируют — нужен A/B testing                │
+    │  • Деградация промпта должна откатываться автоматически      │
     │                                                              │
-    │  Решение: rate limiting per tenant (ADR-0003) + метрики      │
-    │  usage per tenant × method + model routing                   │
+    │  Решение: Cost attribution per agent (ADR-0008) +            │
+    │  Prompt A/B testing (ADR-0007)                               │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
 ```
@@ -185,7 +182,7 @@ MCP Gateway предназначен для:
     │   │                                                    │     │
     │   │   Единая точка входа для AI-агентов.               │     │
     │   │   Управляет identity, rate limit, audit, PII,      │     │
-    │   │   circuit breaker, multi-tenancy.                  │     │
+    │   │   circuit breaker, multi-tenancy, cost tracking.   │     │
     │   │                                                    │     │
     │   └────┬──────────────┬──────────────┬─────────────────┘     │
     │        │              │              │                       │
@@ -203,9 +200,10 @@ MCP Gateway предназначен для:
     │   • SPIFFE/SPIRE  — identity                                 │
     │   • Redis         — rate limit, breaker state                │
     │   • PostgreSQL    — audit log                                │
-    │   • Vault         — HMAC keys, secrets                       │
+    │   • OpenBao       — HMAC keys, API keys, secrets             │
     │   • S3 (WORM)     — root hash publication                    │
     │   • Prometheus    — metrics                                  │
+    │   • Langfuse      — LLM observability                        │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
 ```
@@ -231,11 +229,14 @@ MCP Gateway предназначен для:
     │   │   1. mTLS + SPIFFE        [ADR-0001]                     │    │
     │   │   2. JWT validation                                       │    │
     │   │   3. Tenant Resolver       [ADR-0004]                    │    │
-    │   │   4. Rate Limiter          [ADR-0003]                    │    │
-    │   │   5. PII Redactor          (TBD ADR-0009)                │    │
-    │   │   6. Circuit Breaker       [ADR-0005]                    │    │
-    │   │   7. Audit Logger          [ADR-0002]                    │    │
-    │   │   8. Upstream Client                                      │    │
+    │   │   4. Agent Resolver        [ADR-0008]                    │    │
+    │   │   5. Rate Limiter          [ADR-0003]                    │    │
+    │   │   6. Prompt Resolver       [ADR-0007]                    │    │
+    │   │   7. PII Redactor          [ADR-0009]                    │    │
+    │   │   8. Circuit Breaker       [ADR-0005]                    │    │
+    │   │   9. Audit Logger          [ADR-0002]                    │    │
+    │   │  10. Cost Recorder         [ADR-0008]                    │    │
+    │   │  11. Upstream Client                                      │    │
     │   │                                                          │    │
     │   └────────────────────────┬─────────────────────────────────┘    │
     │                            │                                       │
@@ -251,24 +252,30 @@ MCP Gateway предназначен для:
     │   │  ┌──────────────┐  ┌──────────────┐  ┌────────────────┐  │   │
     │   │  │  Breaker     │  │  Rate        │  │  PII           │  │   │
     │   │  │  Registry    │  │  Limiter     │  │  Detector      │  │   │
-    │   │  │              │  │              │  │                │  │   │
+    │   │  │              │  │              │  │  (regex+NER)   │  │   │
+    │   │  └──────────────┘  └──────────────┘  └────────────────┘  │   │
+    │   │                                                            │   │
+    │   │  ┌──────────────┐  ┌──────────────┐  ┌────────────────┐  │   │
+    │   │  │  Prompt      │  │  Cost        │  │  OpenBao       │  │   │
+    │   │  │  Resolver    │  │  Recorder    │  │  Client        │  │   │
+    │   │  │  (Langfuse)  │  │              │  │                │  │   │
     │   │  └──────────────┘  └──────────────┘  └────────────────┘  │   │
     │   │                                                            │   │
     │   └────────────────────────┬───────────────────────────────────┘   │
     │                            │                                       │
     └────────────────────────────┼───────────────────────────────────────┘
                                  │
-        ┌────────────┬───────────┼────────────┬─────────────┐
-        │            │           │            │             │
-        ▼            ▼           ▼            ▼             ▼
-    ┌────────┐  ┌────────┐  ┌────────┐  ┌────────┐  ┌──────────┐
-    │ Redis  │  │Postgres│  │ Vault  │  │SPIRE   │  │ S3       │
-    │        │  │        │  │        │  │Agent   │  │ (WORM)   │
-    │ • rate │  │ • audit│  │ • HMAC │  │        │  │ • root   │
-    │   limit│  │   log  │  │   keys │  │ • SVID │  │   hash   │
-    │ • CB   │  │        │  │        │  │        │  │   publi- │
-    │   state│  │        │  │        │  │        │  │   cation │
-    └────────┘  └────────┘  └────────┘  └────────┘  └──────────┘
+        ┌────────────┬───────────┼────────────┬─────────────┬─────────┐
+        │            │           │            │             │         │
+        ▼            ▼           ▼            ▼             ▼         ▼
+    ┌────────┐  ┌────────┐  ┌────────┐  ┌────────┐  ┌──────────┐ ┌───────┐
+    │ Redis  │  │Postgres│  │OpenBao │  │SPIRE   │  │ S3       │ │Lang-  │
+    │        │  │        │  │        │  │Agent   │  │ (WORM)   │ │fuse   │
+    │ • rate │  │ • audit│  │ • HMAC │  │        │  │ • root   │ │       │
+    │   limit│  │   log  │  │   keys │  │ • SVID │  │   hash   │ │ • LLM │
+    │ • CB   │  │        │  │ • API  │  │        │  │   publi- │ │   obs │
+    │   state│  │        │  │   keys │  │        │  │   cation │ │       │
+    └────────┘  └────────┘  └────────┘  └────────┘  └──────────┘ └───────┘
 ```
 
 ### 2.3. C4 Container with Cost Annotations
@@ -293,8 +300,6 @@ MCP Gateway предназначен для:
     │   │                                                                │     │
     │   │   ┌──────────────────┐                                         │     │
     │   │   │   AI Client      │                                         │     │
-    │   │   │  (Claude Desktop,│                                         │     │
-    │   │   │   IDE, custom)   │                                         │     │
     │   │   └────────┬─────────┘                                         │     │
     │   │            │                                                   │     │
     │   │            │ mTLS (SPIFFE SVID)                                │     │
@@ -316,11 +321,13 @@ MCP Gateway предназначен для:
     │   │   │   │                                                 │ │    │     │
     │   │   │   │  • mTLS + SPIFFE ............ 0 ₽               │ │    │     │
     │   │   │   │  • JWT validation ........... 0 ₽               │ │    │     │
-    │   │   │   │  • Tenant resolver .......... 0 ₽               │ │    │     │
+    │   │   │   │  • Tenant/Agent resolver .... 0 ₽               │ │    │     │
     │   │   │   │  • Rate limiter ............. 0 ₽ (Redis ниже)  │ │    │     │
+    │   │   │   │  • Prompt resolver .......... 0 ₽ (Langfuse)    │ │    │     │
     │   │   │   │  • PII redaction ............ 0 ₽ (CPU-bound)   │ │    │     │
     │   │   │   │  • Circuit breaker .......... 0 ₽ (in-memory)   │ │    │     │
     │   │   │   │  • Audit logger ............. 0 ₽ (Postgres)    │ │    │     │
+    │   │   │   │  • Cost recorder ............ 0 ₽ (Prometheus)  │ │    │     │
     │   │   │   │  • Upstream client .......... 0 ₽               │ │    │     │
     │   │   │   │                                                 │ │    │     │
     │   │   │   └────────────────────────────────────────────────┘ │    │     │
@@ -347,22 +354,19 @@ MCP Gateway предназначен для:
     │   │                        ▼                                       │    │
     │   │   ┌──────────────────┐  ┌──────────────────┐  ┌────────────┐   │    │
     │   │   │                  │  │                  │  │            │   │    │
-    │   │   │   Redis          │  │   PostgreSQL     │  │   Vault    │   │    │
-    │   │   │   (rate limit,   │  │   (audit log)    │  │  (secrets) │   │    │
-    │   │   │    CB state)     │  │                  │  │            │   │    │
+    │   │   │   Redis          │  │   PostgreSQL     │  │  OpenBao   │   │    │
     │   │   │                  │  │                  │  │            │   │    │
-    │   │   │   HA, 2 GB,      │  │   HA, 100 GB,    │  │   HA, 3    │   │    │
-    │   │   │   4 vCPU         │  │   2 vCPU, 8 GB   │  │   nodes    │   │    │
-    │   │   │                  │  │                  │  │            │   │    │
+    │   │   │   HA, 2 GB,      │  │   HA, 100 GB,    │  │  HA, 3     │   │    │
+    │   │   │   4 vCPU         │  │   2 vCPU, 8 GB   │  │  nodes     │   │    │
+    │   │   │                  │  │                  │  │  (Raft)    │   │    │
     │   │   │   ~19,000 ₽/мес  │  │   ~45,000 ₽/мес  │  │ ~30,000 ₽/ │   │    │
     │   │   │                  │  │                  │  │   мес      │   │    │
     │   │   │   Per 1M calls:  │  │   Per 1M calls:  │  │            │   │    │
     │   │   │   ~0.13 ₽        │  │   ~6 ₽           │  │  Fixed:    │   │    │
-    │   │   │                  │  │                  │  │  не зависит│   │    │
-    │   │   │   % total:       │  │   % total:       │  │  от calls  │   │    │
-    │   │   │   ~0.006%        │  │   ~0.014%        │  │            │   │    │
-    │   │   │                  │  │                  │  │  % total:  │   │    │
     │   │   │                  │  │                  │  │  ~0.009%   │   │    │
+    │   │   │   % total:       │  │   % total:       │  │            │   │    │
+    │   │   │   ~0.006%        │  │   ~0.014%        │  │            │   │    │
+    │   │   │                  │  │                  │  │            │   │    │
     │   │   └──────────────────┘  └──────────────────┘  └────────────┘   │    │
     │   │                                                                │    │
     │   │   ┌──────────────────┐  ┌──────────────────┐                   │    │
@@ -370,29 +374,19 @@ MCP Gateway предназначен для:
     │   │   │   S3 WORM        │  │   SPIRE Server   │                   │    │
     │   │   │   (root hash)    │  │   (identity)     │                   │    │
     │   │   │                  │  │                  │                   │    │
-    │   │   │   Object Lock    │  │   HA, 3 nodes    │                   │    │
-    │   │   │   7 years        │  │                  │                   │    │
-    │   │   │                  │  │                  │                   │    │
     │   │   │   ~37,500 ₽/мес  │  │   ~25,000 ₽/мес  │                   │    │
+    │   │   │   % total:       │  │   Fixed:         │                   │    │
+    │   │   │   ~0.011%        │  │   ~0.008%        │                   │    │
     │   │   │                  │  │                  │                   │    │
-    │   │   │   Per 1M calls:  │  │   Fixed:         │                   │    │
-    │   │   │   ~0.6 ₽         │  │   не зависит     │                   │    │
-    │   │   │                  │  │   от calls       │                   │    │
-    │   │   │   % total:       │  │                  │                   │    │
-    │   │   │   ~0.011%        │  │   % total:       │                   │    │
-    │   │   │                  │  │   ~0.008%        │                   │    │
     │   │   └──────────────────┘  └──────────────────┘                   │    │
     │   │                                                                │    │
     │   │   ┌──────────────────────────────────────────────────────┐    │    │
     │   │   │                                                        │    │    │
-    │   │   │   Observability (Prometheus + Grafana + Loki)          │    │    │
+    │   │   │   Observability Stack                                  │    │    │
+    │   │   │   (Prometheus + Grafana + Loki + Tempo + Langfuse)     │    │    │
     │   │   │                                                        │    │    │
-    │   │   │   • Metrics: 26 GB / 30 days                           │    │    │
-    │   │   │   • Logs: 260 GB / month                               │    │    │
-    │   │   │   • ~30,000-100,000 ₽/месяц (managed)                  │    │    │
-    │   │   │                                                        │    │    │
-    │   │   │   Fixed: не зависит от calls                           │    │    │
-    │   │   │   % total: ~0.009%                                     │    │    │
+    │   │   │   • ~50,000-120,000 ₽/месяц (managed)                  │    │    │
+    │   │   │   • Fixed: ~0.02%                                      │    │    │
     │   │   │                                                        │    │    │
     │   │   └──────────────────────────────────────────────────────┘    │    │
     │   │                                                                │    │
@@ -432,38 +426,6 @@ MCP Gateway предназначен для:
     └───────────────────────────────────────────────────────────────────────┘
 ```
 
-#### Как читать эту диаграмму
-
-**1. Размер прямоугольника ≠ стоимость.** Gateway нарисован крупно
-потому что это центр логики, но он **0.007%** стоимости. LLM
-нарисован мелко, но это **99.5%**.
-
-**2. Cost per 1M calls — универсальная метрика.** Позволяет сравнивать
-разные компоненты: 0.13 ₽ (Redis) vs 1,250,000 ₽ (LLM) — разница в
-10 миллионов раз.
-
-**3. Fixed vs variable.** Фиксированные компоненты (Vault, SPIRE,
-observability) **не зависят** от количества вызовов — их стоимость
-размазывается по всем тенантам. Variable (LLM, egress, Postgres)
-растут с нагрузкой.
-
-**4. Ключевой вывод:**
-
-```
-    ┌──────────────────────────────────────────────────────────────┐
-    │                                                              │
-    │  Инвестиции в оптимизацию gateway: 0.007% стоимости          │
-    │  → даже 100x улучшение = 0.7% экономии                       │
-    │                                                              │
-    │  Инвестиции в оптимизацию LLM: 99.5% стоимости               │
-    │  → даже 10% улучшение = ~10% экономии (32.5M ₽/месяц)        │
-    │                                                              │
-    │  → FinOps-фокус: model routing, caching, prompt optimization │
-    │  → НЕ: переписывание gateway на Rust, оптимизация regex      │
-    │                                                              │
-    └──────────────────────────────────────────────────────────────┘
-```
-
 #### Cost summary table
 
 ```
@@ -471,113 +433,39 @@ observability) **не зависят** от количества вызовов 
     │ Component                │ ₽/месяц         │ ₽/1M calls  │ % total  │
     ├──────────────────────────┼─────────────────┼─────────────┼──────────┤
     │                          │                 │             │          │
-    │ LLM API (GigaChat Pro)   │ ~325,000,000 ₽* │ 1,250,000 ₽ │ 99.50%   │
-    │                          │                 │             │          │
+    │ LLM API (GigaChat Pro)   │ ~325,000,000 ₽  │ 1,250,000 ₽ │ 99.50%   │
     │ Networking (egress)      │ ~145,000 ₽      │ ~560 ₽      │ 0.045%   │
-    │                          │                 │             │          │
     │ PostgreSQL (HA)          │ ~45,000 ₽       │ ~6 ₽        │ 0.014%   │
-    │                          │                 │             │          │
     │ S3 (WORM archive)        │ ~37,500 ₽       │ ~0.6 ₽      │ 0.011%   │
-    │                          │                 │             │          │
-    │ Vault (HA)               │ ~30,000 ₽       │ fixed       │ 0.009%   │
-    │                          │                 │             │          │
-    │ Observability            │ ~30,000 ₽       │ fixed       │ 0.009%   │
-    │                          │                 │             │          │
+    │ Observability Stack      │ ~50,000-120,000 ₽│ fixed      │ 0.02%    │
+    │ OpenBao (HA)             │ ~30,000 ₽       │ fixed       │ 0.009%   │
     │ SPIRE Server (HA)        │ ~25,000 ₽       │ fixed       │ 0.008%   │
-    │                          │                 │             │          │
     │ Gateway compute          │ ~22,500 ₽       │ ~2.5 ₽      │ 0.007%   │
-    │                          │                 │             │          │
     │ Redis (HA)               │ ~19,000 ₽       │ ~0.13 ₽     │ 0.006%   │
-    │                          │                 │             │          │
     ├──────────────────────────┼─────────────────┼─────────────┼──────────┤
-    │ TOTAL                    │ ~325,650,000 ₽  │ 1,250,570 ₽ │ 100%     │
-    │                          │                 │             │          │
+    │ TOTAL                    │ ~325,700,000 ₽  │ 1,250,570 ₽ │ 100%     │
     └──────────────────────────┴─────────────────┴─────────────┴──────────┘
-
-    * 260M calls × 1.25 ₽ = 325M ₽
 ```
 
 #### Cost-driven architecture decisions
-
-На основе этой диаграммы видно, **куда стоит инвестировать**:
 
 ```
     ┌──────────────────────────────────────────────────────────────┐
     │                                                              │
     │  ✅ Высокий ROI (делать):                                     │
     │                                                              │
-    │  • Response caching (Redis)                                  │
-    │    - Cost: +5,000 ₽/месяц (Redis memory)                     │
-    │    - Savings: ~97M ₽/месяц (30% hit rate на 260M calls)      │
-    │    - ROI: ~19,000%                                           │
-    │                                                              │
-    │  • Model routing (Lite vs Pro)                               │
-    │    - Cost: +50,000 ₽ (ML classifier + engineering)           │
-    │    - Savings: ~160M ₽/месяц (49% savings)                    │
-    │    - ROI: ~320,000%                                          │
-    │                                                              │
-    │  • Prompt optimization                                       │
-    │    - Cost: ~100,000 ₽ (engineering time, one-time)           │
-    │    - Savings: ~65M ₽/месяц (20% savings)                     │
-    │    - ROI: ~65,000%                                           │
-    │                                                              │
-    │  • Batch API для async                                        │
-    │    - Cost: ~200,000 ₽ (engineering)                          │
-    │    - Savings: ~50M ₽/месяц (на 40% асинхронного трафика)     │
-    │    - ROI: ~25,000%                                           │
+    │  • Model routing (Lite vs Pro) ............. ROI ~320,000%   │
+    │  • Prompt optimization ..................... ROI ~65,000%    │
+    │  • Batch API для async ..................... ROI ~25,000%    │
+    │  • Response caching ........................ ROI ~19,000%    │
     │                                                              │
     ├──────────────────────────────────────────────────────────────┤
     │                                                              │
     │  ❌ Низкий ROI (не делать):                                   │
     │                                                              │
-    │  • Переписать gateway на Rust                                │
-    │    - Cost: ~2,000,000 ₽ (engineering)                        │
-    │    - Savings: ~15,000 ₽/месяц (compute с 22,500 до 7,500)    │
-    │    - ROI: 0.75% / год                                        │
-    │                                                              │
-    │  • Оптимизировать PII regex                                  │
-    │    - Cost: ~500,000 ₽ (engineering)                          │
-    │    - Savings: ~2,000 ₽/месяц (меньше CPU pods)               │
-    │    - ROI: 4.8% / год                                         │
-    │                                                              │
-    │  • Уменьшить PostgreSQL hot storage                          │
-    │    - Cost: ~300,000 ₽ (engineering)                          │
-    │    - Savings: ~3,000 ₽/месяц                                 │
-    │    - ROI: 12% / год                                          │
-    │                                                              │
-    └──────────────────────────────────────────────────────────────┘
-```
-
-#### Cost tier breakdown by C4 layer
-
-```
-    ┌──────────────────────────────────────────────────────────────┐
-    │                                                              │
-    │  C4 Layer         Components         % total cost            │
-    │  ─────────        ──────────         ────────────            │
-    │                                                              │
-    │  Client Side      AI Client          0% (клиент платит)      │
-    │                                                              │
-    │  Gateway          MCP Gateway        0.007%                  │
-    │                   SPIRE Agent        (входит в SPIRE Server) │
-    │                                                              │
-    │  Backend          Redis              0.006%                  │
-    │                   PostgreSQL         0.014%                  │
-    │                   Vault              0.009%                  │
-    │                   S3 WORM            0.011%                  │
-    │                   SPIRE Server       0.008%                  │
-    │                   Observability      0.009%                  │
-    │                                                              │
-    │  External         Networking         0.045%                  │
-    │                   LLM API            99.5%   ⚠️              │
-    │                                                              │
-    │  ─────────────────────────────────────────────────────────    │
-    │  TOTAL                               100%                   │
-    │                                                              │
-    │  Backend (infra):                    ~0.06%                  │
-    │  Gateway (compute):                  ~0.007%                 │
-    │  Networking:                         ~0.045%                 │
-    │  LLM:                                ~99.5%  ⚠️              │
+    │  • Переписать gateway на Rust ............... ROI ~0.75%/год │
+    │  • Оптимизировать PII regex ................. ROI ~4.8%/год  │
+    │  • Уменьшить PostgreSQL hot storage ......... ROI ~12%/год   │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
 ```
@@ -607,38 +495,58 @@ observability) **не зависят** от количества вызовов 
     │      ├─ Проверка: SPIFFE ID авторизован для tenant_id       │
     │      └─ tenant.WithID(ctx, tenant_id)                       │
     │                                                             │
-    │   5. Rate Limit check                  [ADR-0003]           │
+    │   5. Agent Resolver                    [ADR-0008]           │
+    │      ├─ agent_id из JWT claim (приоритет)                   │
+    │      ├─ Fallback: X-Agent-ID header                         │
+    │      ├─ Fallback: "unknown" + warning metric                │
+    │      └─ agent.WithID(ctx, agent_id)                         │
+    │                                                             │
+    │   6. Rate Limit check                  [ADR-0003]           │
     │      ├─ Key: rl:{tenant}:tools_call:60s                     │
     │      ├─ Lua: ZREMRANGEBYSCORE + PEXPIRE + ZCARD + ZADD      │
     │      ├─ allowed=1 → continue, allowed=0 → 429 + Retry-After │
     │      └─ Headers: X-RateLimit-Limit/Remaining/Reset          │
     │                                                             │
-    │   6. PII Redaction                     (TBD ADR-0009)       │
-    │      ├─ Detect: email, phone, SSN, IBAN, credit card        │
-    │      ├─ Mask: <EMAIL_1>, <PHONE_2>                          │
+    │   7. Prompt Resolver                   [ADR-0007]           │
+    │      ├─ Fetch prompt from Langfuse (cache TTL 5m)           │
+    │      ├─ A/B split: hash(tenant, agent, request_id) % 100    │
+    │      ├─ Select label: "prod-a" or "prod-b"                  │
+    │      └─ Compile prompt with variables                       │
+    │                                                             │
+    │   8. PII Redaction                     [ADR-0009]           │
+    │      ├─ Layer 1: Regex (email, phone, SSN, IBAN, card)      │
+    │      ├─ Layer 2: NER (Person, Location, Organization)       │
+    │      ├─ Layer 3: Custom per-tenant patterns                 │
+    │      ├─ Mask: <EMAIL_1>, <PERSON_2>                         │
     │      └─ Store mapping in request-scoped memory              │
     │                                                             │
-    │   7. Circuit Breaker check             [ADR-0005]           │
+    │   9. Circuit Breaker check             [ADR-0005]           │
     │      ├─ Key: {tenant}:{upstream}                            │
     │      ├─ State: closed → allow, open → 503, half-open → N    │
     │      └─ Retry (3x exponential backoff) внутри breaker'а     │
     │                                                             │
-    │   8. Upstream call                                          │
+    │  10. Upstream call                                          │
     │      ├─ HTTPS to LLM API / MCP server                       │
     │      ├─ Timeout: context.WithTimeout(ctx, 30s)              │
     │      └─ Response: stream or JSON                            │
     │                                                             │
-    │   9. PII Unmask                                             │
+    │  11. PII Unmask                                             │
     │      ├─ Reverse mapping <EMAIL_1> → original                │
     │      └─ Streaming-safe: overlap buffer 256 bytes            │
     │                                                             │
-    │  10. Audit Log                         [ADR-0002]           │
-    │      ├─ Entry: {Seq, Timestamp, TenantID, Actor,            │
+    │  12. Cost Recorder                     [ADR-0008]           │
+    │      ├─ Extract tokens from LLM response                    │
+    │      ├─ Compute cost по pricing config                      │
+    │      ├─ Record mcp_llm_cost_rub_total{tenant, agent, ...}   │
+    │      └─ Update budget metrics                                │
+    │                                                             │
+    │  13. Audit Log                         [ADR-0002]           │
+    │      ├─ Entry: {Seq, Timestamp, TenantID, AgentID, Actor,   │
     │      │          Action, Resource, Outcome, Hash, HMAC}      │
-    │      ├─ HMAC = HMAC-SHA256(Key, Hash)                       │
+    │      ├─ HMAC key from OpenBao (ADR-0010)                    │
     │      └─ Single-writer batching → Postgres                   │
     │                                                             │
-    │  11. Response → Client                                      │
+    │  14. Response → Client                                      │
     │      ├─ HTTP 200 + stream/JSON                              │
     │      └─ Headers: X-RateLimit-*, X-Request-ID, traceparent   │
     │                                                             │
@@ -664,8 +572,9 @@ observability) **не зависят** от количества вызовов 
     │                                                              │
     │  • MCP Gateway pods (distroless, non-root)                   │
     │  • SPIRE Agent (sidecar или DaemonSet)                       │
+    │  • PII NER sidecar (Natasha, gRPC)                           │
     │                                                              │
-    │  Trust boundary: mTLS + JWT к backend                        │
+    │  Trust boundary: mTLS + AppRole к backend                    │
     │                                                              │
     ├──────────────────────────────────────────────────────────────┤
     │                                                              │
@@ -674,9 +583,10 @@ observability) **не зависят** от количества вызовов 
     │                                                              │
     │  • Redis (rate limit + breaker state)                        │
     │  • PostgreSQL (audit log)                                    │
-    │  • Vault (HMAC keys, secrets)                                │
+    │  • OpenBao (HMAC keys, API keys, secrets)                    │
     │  • SPIRE Server (identity issuance)                          │
     │  • Prometheus (metrics scrape)                               │
+    │  • Langfuse (LLM observability)                              │
     │                                                              │
     │  Trust boundary: HTTPS + mTLS к upstream                     │
     │                                                              │
@@ -718,7 +628,8 @@ observability) **не зависят** от количества вызовов 
     ├──────┼─────────────────────────────┼─────────────────────────────┤
     │ 0002 │ Audit log                   │ HMAC hash-chain             │
     │      │                             │ • SHA-256 цепочка           │
-    │      │                             │ • HMAC-SHA256 (ключ в Vault)│
+    │      │                             │ • HMAC-SHA256 (ключ в       │
+    │      │                             │   OpenBao)                  │
     │      │                             │ • Canonical serialization   │
     │      │                             │ • Single-writer batching    │
     │      │                             │ • Off-site root hash (S3)   │
@@ -746,21 +657,56 @@ observability) **не зависят** от количества вызовов 
     │      │                             │ • Tempo (traces)            │
     │      │                             │ • Langfuse (LLM-specific)   │
     │      │                             │ • Tail-based sampling       │
+    ├──────┼─────────────────────────────┼─────────────────────────────┤
+    │ 0007 │ Prompt A/B testing          │ Langfuse + labels           │
+    │      │                             │ • Prompt versioning         │
+    │      │                             │ • Deterministic hash split  │
+    │      │                             │ • Auto-rollback             │
+    │      │                             │ • LLM-as-a-Judge            │
+    ├──────┼─────────────────────────────┼─────────────────────────────┤
+    │ 0008 │ Cost attribution            │ Per (tenant, agent)         │
+    │      │                             │ • agent_id в метриках       │
+    │      │                             │ • Grafana dashboards        │
+    │      │                             │ • Rule-based anomaly        │
+    │      │                             │ • Auto-throttle             │
+    ├──────┼─────────────────────────────┼─────────────────────────────┤
+    │ 0009 │ PII redaction               │ Multi-layer pipeline        │
+    │      │                             │ • Regex (structured PII)    │
+    │      │                             │ • NER (unstructured)        │
+    │      │                             │ • Custom per-tenant rules   │
+    │      │                             │ • Reversible placeholders   │
+    │      │                             │ • Streaming-safe unmask     │
+    ├──────┼─────────────────────────────┼─────────────────────────────┤
+    │ 0010 │ Key management              │ OpenBao (MPL 2.0)           │
+    │      │                             │ • AppRole auth              │
+    │      │                             │ • RBAC policies             │
+    │      │                             │ • HMAC rotation 90 дней     │
+    │      │                             │ • Sealed backup в S3        │
+    │      │                             │ • Incident response         │
     └──────┴─────────────────────────────┴─────────────────────────────┘
 ```
 
-### 3.2. Связанные решения (запланированные ADR)
+### 3.2. Статус ADR
 
 ```
     ┌──────┬─────────────────────────────┬─────────────────────────────┐
     │ ADR  │ Тема                        │ Статус                      │
     ├──────┼─────────────────────────────┼─────────────────────────────┤
+    │ 0001 │ Identity / mTLS             │ ✅ Accepted                 │
+    │ 0002 │ Audit log                   │ ✅ Accepted                 │
+    │ 0003 │ Rate limiting               │ ✅ Accepted                 │
+    │ 0004 │ Multi-tenancy               │ ✅ Accepted                 │
+    │ 0005 │ Circuit breaker             │ ✅ Accepted                 │
     │ 0006 │ Observability stack         │ ✅ Accepted                 │
     │ 0007 │ Prompt A/B testing          │ 🚧 In Progress              │
     │ 0008 │ Cost attribution per agent  │ 🚧 In Progress              │
     │ 0009 │ PII redaction               │ 📋 Planned                  │
-    │ 0010 │ Key management (HMAC+SVID)  │ 📋 Planned                  │
+    │ 0010 │ Key management (OpenBao)    │ 📋 Planned                  │
     └──────┴─────────────────────────────┴─────────────────────────────┘
+
+    Примечание: ADR-0007 и ADR-0008 помечены «In Progress»,
+    потому что их реализация требует интеграции с Langfuse (ADR-0006).
+    ADR-0009 и ADR-0010 — «Planned», реализация в Phase 3 Roadmap.
 ```
 
 ### 3.3. Почему именно эти решения
@@ -776,6 +722,24 @@ observability) **не зависят** от количества вызовов 
   GitHub).
 - **context.Context** — идиоматичен для Go, рекомендован Google.
 - **gobreaker** — используется в production Sony, Mercari, LINE.
+- **OpenTelemetry** — стандарт CNCF для observability.
+- **Langfuse** — open-source LLM observability, self-hosted.
+- **OpenBao** — MPL 2.0, Linux Foundation governance, fork Vault.
+
+**Дополнительные принципы:**
+
+```
+    ┌──────────────────────────────────────────────────────────────┐
+    │                                                              │
+    │  • Open source first — избегаем vendor lock                  │
+    │    (OpenBao вместо Vault из-за BSL 1.1)                      │
+    │  • Zero PII to LLM — defense in depth для compliance         │
+    │  • Cost transparency — FinOps на уровне (tenant, agent)      │
+    │  • Safe prompt evolution — A/B testing + auto-rollback       │
+    │  • Unified observability — один trace_id сквозь все сигналы  │
+    │                                                              │
+    └──────────────────────────────────────────────────────────────┘
+```
 
 Все решения **обоснованы в ADR** с рассмотрением альтернатив. Это
 отличает enterprise-архитектуру от PoC-решений «по вкусу».
@@ -798,6 +762,7 @@ observability) **не зависят** от количества вызовов 
     │  • HMAC-ключи audit log                                      │
     │  • SPIFFE SVID (сертификаты identity)                        │
     │  • Tenant config (rate limits, upstream endpoints)           │
+    │  • Agent config (budgets, throttling rules)                  │
     │  • Audit log (кто, когда, что сделал)                        │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
@@ -809,7 +774,7 @@ observability) **не зависят** от количества вызовов 
     │  S — Spoofing (4)                                            │
     │    S-01: Подмена SPIFFE ID                                   │
     │    S-02: Подмена JWT                                         │
-    │    S-03: Подмена tenant_id                                   │
+    │    S-03: Подмена tenant_id / agent_id                        │
     │    S-04: Подмена gateway под'а                               │
     │                                                              │
     │  T — Tampering (6)                                           │
@@ -843,7 +808,7 @@ observability) **не зависят** от количества вызовов 
     │    E-01: Cross-tenant escalation                             │
     │    E-02: Container escape                                    │
     │    E-03: ServiceAccount compromise                           │
-    │    E-04: Vault privilege escalation                          │
+    │    E-04: OpenBao privilege escalation                        │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
 ```
@@ -855,17 +820,18 @@ observability) **не зависят** от количества вызовов 
     │ Угроза           │ Митигация                                │
     ├──────────────────┼──────────────────────────────────────────┤
     │ S-01, S-02       │ ADR-0001: SPIFFE/SPIRE + JWT validation  │
-    │ S-03             │ ADR-0004: X-Tenant-ID только в dev       │
+    │ S-03             │ ADR-0004 + ADR-0008: X-Tenant-ID только  │
+    │                  │ в dev, agent_id из JWT                    │
     │ S-04             │ ADR-0001: WorkloadAttestor + image SHA   │
     │ T-01, T-06       │ ADR-0001: mTLS TLS 1.3                   │
     │ T-02             │ ADR-0002: parameterized queries + RLS    │
-    │ T-03             │ ADR-0002: HMAC hash-chain + append-only  │
+    │ T-03             │ ADR-0002 + ADR-0010: HMAC + OpenBao      │
     │ T-04             │ Redis AUTH + NetworkPolicy               │
     │ T-05             │ ADR-0002: S3 Object Lock COMPLIANCE      │
     │ R-01             │ ADR-0002: подпись actor (SPIFFE ID)      │
     │ R-02             │ GitOps + audit config changes            │
-    │ I-01             │ ADR-0009 (TBD): PII redaction pipeline   │
-    │ I-02             │ Secret management (Vault) + no-log       │
+    │ I-01             │ ADR-0009: PII redaction pipeline         │
+    │ I-02             │ ADR-0010: OpenBao + no-log               │
     │ I-03, E-01       │ ADR-0004: tenant_id isolation + allowlist│
     │ I-04             │ No-log policy + periodic scan            │
     │ I-05             │ ulimit -c 0 + MLOCK + zeroing buffers    │
@@ -877,7 +843,7 @@ observability) **не зависят** от количества вызовов 
     │ D-04             │ ReadTimeout + IdleTimeout + backoff      │
     │ E-02             │ Distroless + PodSecurityStandards        │
     │ E-03             │ automountServiceAccountToken: false      │
-    │ E-04             │ Vault AppRole + short-lived tokens       │
+    │ E-04             │ ADR-0010: OpenBao AppRole + RBAC         │
     └──────────────────┴──────────────────────────────────────────┘
 ```
 
@@ -893,6 +859,8 @@ observability) **не зависят** от количества вызовов 
     │    - mTLS (ADR-0001)                                         │
     │    - шифрование в transit                                    │
     │    - audit log (ADR-0002)                                    │
+    │    - PII redaction (ADR-0009)                                │
+    │    - key management (ADR-0010, OpenBao)                      │
     │  • Ст. 22 — уведомление РКН → процедура (TBD)                │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
@@ -914,9 +882,16 @@ observability) **не зависят** от количества вызовов 
     ├──────────────────────────────────────────────────────────────┤
     │                                                              │
     │  • Req. 3 — защита cardholder data → PII redaction           │
+    │  • Req. 3.5 — защита ключей:                                 │
+    │    - HMAC keys в OpenBao (ADR-0010)                          │
+    │    - Rotation 90 дней                                        │
+    │    - Sealed backup                                           │
+    │  • Req. 3.6 — управление ключами:                            │
+    │    - RBAC policies в OpenBao                                 │
+    │    - Audit log всех доступов                                 │
     │  • Req. 4 — шифрование при передаче → mTLS (ADR-0001)        │
     │  • Req. 7 — need-to-know access → tenant isolation (ADR-0004)│
-    │  • Req. 8 — идентификация пользователей → JWT + SPIFFE       │
+    │  • Req. 8 — идентификация → JWT + SPIFFE                     │
     │  • Req. 10 — logging and monitoring:                         │
     │    - 10.2 — audit trail                                      │
     │    - 10.3 — record audit trail entries                       │
@@ -962,10 +937,11 @@ observability) **не зависят** от количества вызовов 
     │  • Defense in Depth: несколько слоёв защиты                  │
     │  • Fail-Secure: при сомнениях — отклонять запрос             │
     │  • Immutable Infrastructure: distroless, non-root            │
-    │  • Secret Management: Vault для ключей                       │
-    │  • No Secrets in Code: секреты только через env / Vault      │
+    │  • Secret Management: OpenBao для ключей                     │
+    │  • No Secrets in Code: секреты только через env / OpenBao    │
     │  • No PII in Logs: логи без PII, redaction прежде всего      │
     │  • Audit Everything: все security-события в audit log        │
+    │  • Open Source First: избегаем vendor lock-in                │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
 ```
@@ -1055,6 +1031,12 @@ observability) **не зависят** от количества вызовов 
     │  6. Fallback                                                 │
     │     └─ Cached response или degraded mode                      │
     │                                                              │
+    │  7. Auto-throttle (ADR-0008)                                 │
+    │     └─ Автоматическое снижение rate при budget overrun        │
+    │                                                              │
+    │  8. Auto-rollback prompts (ADR-0007)                         │
+    │     └─ Откат промпта при деградации метрик                    │
+    │                                                              │
     └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -1078,6 +1060,12 @@ observability) **не зависят** от количества вызовов 
     │  • Billing (FinOps per tenant)                               │
     │  • Authorized SPIFFE IDs (какие workload'ы могут обращаться) │
     │                                                              │
+    │  Внутри tenant'а может быть много AGENT'ов:                  │
+    │  • Каждый агент имеет свой agent_id                          │
+    │  • Cost attribution per agent (ADR-0008)                     │
+    │  • Budget per agent                                          │
+    │  • Auto-throttle per agent при overrun                       │
+    │                                                              │
     └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -1090,15 +1078,18 @@ observability) **не зависят** от количества вызовов 
     │   ───────     ────────────────────────────────────           │
     │                                                              │
     │   Identity    SPIFFE ID namespace + JWT tenant_id claim      │
+    │   Agent       agent_id в JWT claim / header (ADR-0008)       │
     │   Context     tenant_id в context.Context (ADR-0004)         │
     │   Rate limit  Key: rl:{tenant}:method:window (ADR-0003)      │
     │   Breaker     Key: {tenant}:{upstream} (ADR-0005)            │
     │   Audit       Column tenant_id + RLS (ADR-0002)              │
-    │   PII         Policy per tenant (ADR-0009 TBD)               │
+    │   PII         Policy per tenant (ADR-0009)                   │
+    │   Prompt      A/B split per tenant/agent (ADR-0007)          │
+    │   Cost        Label tenant+agent в metrics (ADR-0008)        │
     │   Upstream    Registry: tenant → endpoint mapping            │
-    │   Metrics     Label tenant в Prometheus                      │
-    │   Logs        Structured logging с tenant_id                 │
-    │   Traces      Span attribute tenant.id                       │
+    │   Metrics     Labels tenant, agent в Prometheus              │
+    │   Logs        Structured logging с tenant_id, agent_id       │
+    │   Traces      Span attributes tenant.id, agent.id            │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
 ```
@@ -1151,6 +1142,13 @@ tenants:
       max_requests: 3
       interval: "30s"
       timeout: "60s"
+    agents:
+      - id: "agent-customer-support"
+        budget_rub_per_hour: 5000
+      - id: "agent-code-reviewer"
+        budget_rub_per_hour: 50000
+      - id: "agent-internal-tools"
+        budget_rub_per_hour: 500000
 
   - id: "globex"
     tier: "standard"
@@ -1181,15 +1179,15 @@ tenants:
     │  Baseline: 100 RPS, ~260M calls/month                        │
     │                                                              │
     │  Cost per 1M MCP calls (GigaChat Pro): ~1,250,570 ₽          │
-    │  Monthly cost (260M calls): ~325,650,000 ₽                   │
+    │  Monthly cost (260M calls): ~325,700,000 ₽                   │
     │                                                              │
     │  Распределение:                                              │
     │  • LLM API:          99.50%  ⚠️ (вне контроля архитектора)   │
     │  • Networking:       0.045%                                  │
+    │  • Observability:    0.020%                                  │
     │  • PostgreSQL:       0.014%                                  │
     │  • S3 WORM:          0.011%                                  │
-    │  • Vault:            0.009%                                  │
-    │  • Observability:    0.009%                                  │
+    │  • OpenBao:          0.009%                                  │
     │  • SPIRE Server:     0.008%                                  │
     │  • Gateway compute:  0.007%                                  │
     │  • Redis:            0.006%                                  │
@@ -1205,7 +1203,7 @@ tenants:
     │  1. LLM = 99.5% стоимости. Все архитектурные решения         │
     │     нужно оценивать через призму влияния на LLM-вызовы.      │
     │                                                              │
-    │  2. Инфраструктура (Redis, Postgres, Vault, SPIRE) —          │
+    │  2. Инфраструктура (Redis, Postgres, OpenBao, SPIRE) —        │
     │     менее 0.1% стоимости. Не оптимизировать в первую         │
     │     очередь, если работает.                                  │
     │                                                              │
@@ -1224,7 +1222,85 @@ tenants:
     └──────────────────────────────────────────────────────────────┘
 ```
 
-### 7.3. Cost-driven decisions (ROI ranking)
+### 7.3. Per-tenant cost model
+
+```
+    ┌──────────────────────────────────────────────────────────────┐
+    │                                                              │
+    │  ┌─────────────┬────────────┬──────────────┬──────────────┐ │
+    │  │ Tier        │ Rate limit │ Volume/месяц │ Cost/месяц   │ │
+    │  ├─────────────┼────────────┼──────────────┼──────────────┤ │
+    │  │ Enterprise  │ 1000/min   │ 10M calls    │ ~12.5M ₽     │ │
+    │  │ Standard    │ 100/min    │ 1M calls     │ ~1.25M ₽     │ │
+    │  │ Free        │ 10/min     │ 100k calls   │ ~125k ₽      │ │
+    │  └─────────────┴────────────┴──────────────┴──────────────┘ │
+    │                                                              │
+    │  Pricing strategy (пример):                                  │
+    │  • Enterprise: 15M ₽/месяц (20% margin)                      │
+    │  • Standard: 1.5M ₽/месяц (20% margin)                       │
+    │  • Free: 0 ₽ (loss leader для adoption)                      │
+    │                                                              │
+    └──────────────────────────────────────────────────────────────┘
+```
+
+### 7.4. Сравнение с альтернативами
+
+```
+    ┌──────────────────────────────────────────────────────────────┐
+    │                                                              │
+    │  Cost per 1M MCP calls — сравнение подходов:                 │
+    │                                                              │
+    │  ┌────────────────────────────┬──────────────┬─────────────┐│
+    │  │ Approach                   │ ₽/1M calls   │ Notes       ││
+    │  ├────────────────────────────┼──────────────┼─────────────┤│
+    │  │ No caching, GigaChat Pro   │ 1,250,000 ₽  │ baseline    ││
+    │  │ + response caching (30%)   │ 875,000 ₽    │ -30%        ││
+    │  │ + model routing (Lite)     │ 375,000 ₽    │ -70%        ││
+    │  │ + prompt optimization      │ 312,500 ₽    │ -75%        ││
+    │  │ + batch API                │ 218,750 ₽    │ -82.5%      ││
+    │  │ + local Ollama (large vol) │ 62,500 ₽     │ -95%        ││
+    │  └────────────────────────────┴──────────────┴─────────────┘│
+    │                                                              │
+    │  → Оптимизация LLM costs = biggest FinOps lever              │
+    │                                                              │
+    └──────────────────────────────────────────────────────────────┘
+```
+
+### 7.5. Cost attribution per agent
+
+Полный анализ — в ADR-0008. Ключевые цифры:
+
+```
+    ┌──────────────────────────────────────────────────────────────┐
+    │                                                              │
+    │  Cost breakdown per tenant (пример: 10M calls/month):        │
+    │                                                              │
+    │  Tenant "acme" — total: ~12.5M ₽/месяц                       │
+    │                                                              │
+    │  ├── agent-internal-tools      :  ~9.5M ₽  (76%)             │
+    │  ├── agent-code-reviewer       :  ~2.0M ₽  (16%)             │
+    │  ├── agent-customer-support    :  ~0.8M ₽  (6%)              │
+    │  └── agent-data-analyst        :  ~0.2M ₽  (2%)              │
+    │                                                              │
+    │  Без agent-level attribution — невозможно понять:            │
+    │  • Кто тратит больше всех                                     │
+    │  • Где аномалия                                               │
+    │  • Кого throttle при overrun                                  │
+    │                                                              │
+    │  С agent-level attribution — возможно:                       │
+    │  • Auto-throttle на конкретного агента                        │
+    │  • Notify tenant: "ваш agent-X тратит 76% бюджета"           │
+    │  • Optimize prompts per agent (ADR-0007)                     │
+    │                                                              │
+    │  Alerting:                                                   │
+    │  • W-08: Agent cost >100% budget → warning                   │
+    │  • C-08: Agent cost >150% budget → critical (auto-throttle)  │
+    │  • C-09: Agent cost anomaly (>3x baseline) → critical        │
+    │                                                              │
+    └──────────────────────────────────────────────────────────────┘
+```
+
+### 7.6. Cost-driven decisions (ROI ranking)
 
 ```
     ┌──────────────────────────────────────────────────────────────┐
@@ -1246,29 +1322,6 @@ tenants:
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
 ```
-
-### 7.4. Per-tenant cost model
-
-```
-    ┌──────────────────────────────────────────────────────────────┐
-    │                                                              │
-    │  ┌─────────────┬────────────┬──────────────┬──────────────┐ │
-    │  │ Tier        │ Rate limit │ Volume/месяц │ Cost/месяц   │ │
-    │  ├─────────────┼────────────┼──────────────┼──────────────┤ │
-    │  │ Enterprise  │ 1000/min   │ 10M calls    │ ~12.5M ₽     │ │
-    │  │ Standard    │ 100/min    │ 1M calls     │ ~1.25M ₽     │ │
-    │  │ Free        │ 10/min     │ 100k calls   │ ~125k ₽      │ │
-    │  └─────────────┴────────────┴──────────────┴──────────────┘ │
-    │                                                              │
-    │  Pricing strategy (пример):                                  │
-    │  • Enterprise: 15M ₽/месяц (20% margin)                      │
-    │  • Standard: 1.5M ₽/месяц (20% margin)                       │
-    │  • Free: 0 ₽ (loss leader для adoption)                      │
-    │                                                              │
-    └──────────────────────────────────────────────────────────────┘
-```
-
-Полный FinOps-анализ — в `docs/reliability/capacity-planning.md`.
 
 ---
 
@@ -1293,6 +1346,8 @@ tenants:
     │  │   │ +spire-    │  │ +spire-    │  │ +spire-    │    │   │
     │  │   │  agent     │  │  agent     │  │  agent     │    │   │
     │  │   │  sidecar   │  │  sidecar   │  │  sidecar   │    │   │
+    │  │   │ +NER       │  │ +NER       │  │ +NER       │    │   │
+    │  │   │  sidecar   │  │  sidecar   │  │  sidecar   │    │   │
     │  │   └────────────┘  └────────────┘  └────────────┘    │   │
     │  │                                                      │   │
     │  │   Security:                                          │   │
@@ -1303,26 +1358,22 @@ tenants:
     │  │                                                      │   │
     │  │   Probes:                                            │   │
     │  │   • livenessProbe: /healthz                          │   │
-    │  │   • readinessProbe: /readyz (SVID + Vault + Redis)   │   │
+    │  │   • readinessProbe: /readyz (SVID + OpenBao + Redis) │   │
     │  │   • startupProbe: initial delay 30s                  │   │
     │  │                                                      │   │
     │  │   NetworkPolicy:                                     │   │
     │  │   • ingress: только от ingress-controller            │   │
-    │  │   • egress: allowlist (Redis, Postgres, Vault,       │   │
-    │  │     SPIRE Server, LLM API, MCP servers)              │   │
+    │  │   • egress: allowlist (Redis, Postgres, OpenBao,     │   │
+    │  │     SPIRE Server, Langfuse, LLM API, MCP servers)    │   │
     │  │                                                      │   │
-    │  └──────────────────────────────────────────────────────┘   │
-    │                                                              │
-    │  ┌──────────────────────────────────────────────────────┐   │
-    │  │   DaemonSet: spire-agent                             │   │
-    │  │   (если не sidecar)                                  │   │
     │  └──────────────────────────────────────────────────────┘   │
     │                                                              │
     │  External services (managed):                                │
     │  • Redis (Sentinel / Cluster)                                │
     │  • PostgreSQL (HA, managed)                                  │
-    │  • Vault (HA)                                                │
+    │  • OpenBao (HA, 3 nodes, Raft)                               │
     │  • SPIRE Server                                              │
+    │  • Langfuse (self-hosted)                                    │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
 ```
@@ -1340,7 +1391,7 @@ tenants:
         ├── deployment.yaml
         ├── service.yaml
         ├── serviceaccount.yaml
-        ├── configmap.yaml           # tenants.yaml, policies
+        ├── configmap.yaml           # tenants.yaml, agents.yaml, policies
         ├── secret.yaml              # template only, ESO managed
         ├── hpa.yaml
         ├── pdb.yaml                 # pod disruption budget
@@ -1357,10 +1408,10 @@ tenants:
     │  External Secrets Operator (ESO)                             │
     │                                                              │
     │  ┌─────────────────┐         ┌────────────────────┐         │
-    │  │  Vault          │  sync   │  K8s Secret        │         │
+    │  │  OpenBao        │  sync   │  K8s Secret        │         │
     │  │                 │ ──────► │                    │         │
     │  │  • HMAC keys    │         │  mcp-gateway-      │         │
-    │  │  • JWT secrets  │         │    secrets         │         │
+    │  │  • API keys     │         │    secrets         │         │
     │  │  • DB creds     │         │                    │         │
     │  └─────────────────┘         └────────────────────┘         │
     │                                       │                      │
@@ -1373,7 +1424,7 @@ tenants:
     │  RBAC:                                                       │
     │  • mcp-gateway SA: read own secrets                          │
     │  • Нет прав на чтение чужих secrets                          │
-    │  • Audit log всех доступов к secrets (Vault audit)           │
+    │  • Audit log всех доступов к secrets (OpenBao audit)         │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
 ```
@@ -1414,8 +1465,8 @@ tenants:
     │  ────────────────────                                        │
     │                                                              │
     │  RED metrics:                                                │
-    │  • Rate: mcp_requests_total{tenant,method,status}            │
-    │  • Errors: mcp_errors_total{tenant,method,error_type}        │
+    │  • Rate: mcp_requests_total{tenant, agent, method, status}   │
+    │  • Errors: mcp_errors_total{tenant, method, error_type}      │
     │  • Duration: mcp_request_duration_seconds (histogram)        │
     │                                                              │
     │  USE metrics:                                                │
@@ -1424,27 +1475,30 @@ tenants:
     │  • Errors: см. выше                                          │
     │                                                              │
     │  Business metrics:                                           │
-    │  • llm_tokens_total{tenant,provider,model}                   │
-    │  • llm_cost_rub_total{tenant,provider,model}                 │
-    │  • rate_limit_denied_total{tenant,method}                    │
-    │  • circuit_state{tenant,upstream}                            │
+    │  • llm_tokens_total{tenant, agent, provider, model}          │
+    │  • llm_cost_rub_total{tenant, agent, provider, model}        │
+    │  • rate_limit_denied_total{tenant, method}                   │
+    │  • circuit_state{tenant, upstream}                           │
     │  • cache_hits_total{tenant}                                  │
+    │  • pii_redacted_total{tenant, type}                          │
+    │  • prompt_version_usage{name, version}                       │
+    │  • agent_budget_used_pct{tenant, agent}                      │
     │                                                              │
     │  Logs (structured JSON → Loki)                               │
     │  ─────────────────────────────                               │
     │                                                              │
     │  • correlation_id = trace_id                                 │
-    │  • tenant_id, spiffe_id, method, outcome                     │
+    │  • tenant_id, agent_id, spiffe_id, method, outcome           │
     │  • БЕЗ PII (redaction до логирования)                        │
     │  • Уровни: debug, info, warn, error                          │
     │                                                              │
-    │  Traces (OpenTelemetry → Jaeger/Tempo)                       │
-    │  ─────────────────────────────────────                       │
+    │  Traces (OpenTelemetry → Tempo)                              │
+    │  ──────────────────────────────                              │
     │                                                              │
     │  • Span на каждый MCP-вызов                                  │
     │  • Child spans: middleware, upstream call, audit write       │
-    │  • Attributes: tenant.id, mcp.method, upstream.name,         │
-    │    pii.redacted_count                                        │
+    │  • Attributes: tenant.id, agent.id, mcp.method,              │
+    │    upstream.name, pii.redacted_count, llm.cost_rub           │
     │  • W3C traceparent propagation                               │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
@@ -1468,16 +1522,24 @@ tenants:
     │  • Rate limit hits/denials per tenant                        │
     │  • Circuit breaker state per tenant × upstream               │
     │                                                              │
-    │  Row 3: Dependencies                                         │
+    │  Row 3: Per-agent (ADR-0008)                                 │
+    │  • Top-N agents by cost                                      │
+    │  • Cost trend per agent                                      │
+    │  • Budget vs actual per agent                                │
+    │  • Anomaly detection heatmap                                 │
+    │                                                              │
+    │  Row 4: Dependencies                                         │
     │  • Redis latency / memory                                    │
     │  • PostgreSQL write latency                                  │
-    │  • Vault request rate                                        │
+    │  • OpenBao request rate                                      │
     │  • SPIRE SVID TTL distribution                               │
+    │  • Langfuse prompt fetch latency                             │
     │                                                              │
-    │  Row 4: Business metrics                                     │
+    │  Row 5: Business metrics                                     │
     │  • LLM tokens per tenant                                     │
     │  • LLM cost per tenant (FinOps)                              │
-    │  • Audit log write rate                                      │
+    │  • PII redacted per tenant × type                            │
+    │  • Prompt version distribution                               │
     │  • Cache hit rate per tenant                                 │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
@@ -1493,11 +1555,13 @@ tenants:
     │  • Availability burn rate >14.4x за 5m                       │
     │  • Circuit open >10m для любого (tenant, upstream)           │
     │  • Audit verify failed (целостность нарушена)                │
-    │  • Vault недоступен >2m                                      │
+    │  • OpenBao недоступен >2m                                    │
     │  • SPIRE agent недоступен >2m                                │
     │  • Redis недоступен >1m (для enterprise тенантов)            │
     │  • HMAC key rotation failed                                  │
     │  • Daily cost >2x baseline (FinOps spike)                    │
+    │  • Agent cost >150% budget → auto-throttle                   │
+    │  • Agent cost anomaly >3x baseline                           │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
 
@@ -1513,7 +1577,40 @@ tenants:
     │  • SVID TTL <15m                                             │
     │  • Breaker registry size anomaly                             │
     │  • Tenant cost >100% budget                                  │
+    │  • Agent cost >100% budget                                   │
     │  • Cache hit rate <20%                                       │
+    │  • HMAC key age >80 дней                                     │
+    │  • Unknown agent_id rate >5%                                 │
+    │  • PII detector false positive rate >5%                      │
+    │                                                              │
+    └──────────────────────────────────────────────────────────────┘
+```
+
+### 9.4. Prompt-level observability (ADR-0007)
+
+```
+    ┌──────────────────────────────────────────────────────────────┐
+    │                                                              │
+    │  Langfuse даёт:                                              │
+    │                                                              │
+    │  • Prompt versioning — какая версия использована             │
+    │  • A/B testing — сравнение версий по метрикам                │
+    │  • Cost per prompt version — оптимизация                     │
+    │  • Latency per prompt version                                │
+    │  • Quality scores (LLM-as-a-Judge)                           │
+    │  • Offline experiments (на датасетах)                        │
+    │                                                              │
+    │  Integration с OTel:                                         │
+    │  • langfuse.observation.type = "generation"                  │
+    │  • langfuse.prompt.name = "system-prompt-tools-call"         │
+    │  • langfuse.prompt.version = 2                               │
+    │                                                              │
+    │  Workflow:                                                    │
+    │  1. Draft v3 в Langfuse                                      │
+    │  2. Test на staging dataset                                  │
+    │  3. Label v3 как "prod-b", split 10%                         │
+    │  4. Monitor 24 часа                                          │
+    │  5. Если OK → production; если не OK → auto-rollback         │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
 ```
@@ -1529,45 +1626,48 @@ tenants:
     │                                                              │
     │  ✅ Phase 1: Foundation (Done)                               │
     │  ─────────────────────────────                               │
-    │  • Структура репозитория                                     │
-    │  • 5 ADR (0001-0005)                                         │
-    │  • Blueprint v2 (с FinOps C4)                                │
+    │  • Структура репозитория (~60 файлов)                        │
+    │  • 10 ADR (0001-0010)                                        │
+    │  • Blueprint v3                                              │
     │  • Threat Model v2 (25 угроз)                                │
     │  • SLO.md                                                    │
-    │  • Capacity Planning (FinOps с российскими моделями)         │
+    │  • Capacity Planning                                         │
+    │  • Runbook.md                                                │
     │  • CI (GitHub Actions)                                       │
     │                                                              │
     │  🚧 Phase 2: Core (In Progress)                              │
     │  ──────────────────────────────                              │
     │  • MCP protocol handlers (initialize, tools/list, tools/call)│
     │  • Tenant middleware (ADR-0004)                              │
+    │  • Agent resolver (ADR-0008)                                 │
     │  • Rate limiter с Lua (ADR-0003)                             │
-    │  • Audit logger (ADR-0002)                                   │
+    │  • Audit logger с HMAC hash-chain (ADR-0002)                 │
     │  • Circuit breaker (ADR-0005)                                │
     │  • SPIFFE integration (ADR-0001)                             │
+    │  • OpenBao client (ADR-0010)                                 │
     │                                                              │
     │  📋 Phase 3: Security & Compliance                           │
     │  ───────────────────────────────────                         │
     │  • PII redaction pipeline (ADR-0009)                         │
-    │  • Threat model + compliance mapping                         │
+    │  • Threat model review с InfoSec                             │
     │  • Key management runbook                                    │
     │  • Incident response runbook                                 │
     │  • Penetration testing                                       │
     │                                                              │
-    │  📋 Phase 4: Operations                                      │
-    │  ─────────────────────                                       │
-    │  • SLO + error budget policy                                 │
-    │  • Capacity planning + FinOps                                │
-    │  • Grafana dashboards                                        │
-    │  • Alerting rules                                            │
-    │  • Load testing (k6)                                         │
+    │  📋 Phase 4: LLM-Ops                                         │
+    │  ────────────────────                                        │
+    │  • Prompt A/B testing via Langfuse (ADR-0007)                │
+    │  • Cost attribution per agent (ADR-0008)                     │
+    │  • Auto-rollback prompts                                     │
+    │  • Grafana dashboards (Cost by Agent)                        │
+    │  • LLM-as-a-Judge evaluation                                 │
     │                                                              │
     │  📋 Phase 5: Production Readiness                            │
     │  ────────────────────────────────                            │
     │  • Helm chart production-ready                               │
-    │  • Multi-cluster deployment                                  │
+    │  • Multi-cluster deployment (SPIFFE Federation)              │
     │  • Disaster recovery procedures                              │
-    │  • Security audit (external)                                 │
+    │  • External security audit                                   │
     │  • Compliance certification (152-ФЗ, ISO 27001)              │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
@@ -1575,19 +1675,16 @@ tenants:
 
 ### 10.2. Ограничения reference implementation
 
-**Что НЕ реализовано в reference implementation:**
-
 ```
     ┌──────────────────────────────────────────────────────────────┐
     │                                                              │
     │  • Нет production hardening для конкретной инфраструктуры    │
     │    (требуется адаптация под заказчика)                       │
     │                                                              │
-    │  • PII detection на regex-уровне может давать false          │
-    │    positives/negatives — для production нужен NER +          │
-    │    per-tenant правила                                        │
+    │  • PII detection на regex + NER может давать false           │
+    │    positives/negatives — требуется per-tenant tuning         │
     │                                                              │
-    │  • Нет HA-конфигурации Redis/Postgres из коробки —           │
+    │  • Нет HA-конфигурации Redis/Postgres/OpenBao из коробки —   │
     │    предполагается managed-сервисы                            │
     │                                                              │
     │  • Multi-cluster deployment показан концептуально,           │
@@ -1600,11 +1697,14 @@ tenants:
     │                                                              │
     │  • Penetration testing не проводился                         │
     │                                                              │
-    │  • Цены на LLM (GigaChat, YandexGPT) даны как reference,     │
-    │    требуют проверки по актуальным прайс-листам               │
+    │  • Цены на LLM даны как reference, требуют проверки          │
+    │    по актуальным прайс-листам                                │
     │                                                              │
     │  • FinOps-расчёты сделаны для baseline 100 RPS;              │
     │    при других нагрузках требуется пересчёт                    │
+    │                                                              │
+    │  • ADR-0007-0010 в статусе Planned/In Progress,              │
+    │    реализация — Phase 3-4 Roadmap                            │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
 ```
@@ -1625,7 +1725,7 @@ tenants:
     │  Reliability:                                                │
     │  [ ] SLO defined и согласованы с бизнесом                    │
     │  [ ] Load testing на production-like workload                │
-    │  [ ] Chaos engineering (убить Redis, Vault, upstream)        │
+    │  [ ] Chaos engineering (убить Redis, OpenBao, upstream)      │
     │  [ ] Disaster recovery test                                  │
     │                                                              │
     │  Operations:                                                 │
@@ -1641,10 +1741,16 @@ tenants:
     │  [ ] Regulatory notification procedures                      │
     │                                                              │
     │  FinOps:                                                     │
-    │  [ ] Budget per tenant согласован                            │
+    │  [ ] Budget per tenant + agent согласован                    │
     │  [ ] Cost alerts настроены                                   │
     │  [ ] Optimization pipeline (caching, routing)                │
-    │  [ ] Cost attribution per tenant работает                    │
+    │  [ ] Cost attribution per tenant + agent работает            │
+    │                                                              │
+    │  LLM-Ops:                                                    │
+    │  [ ] Langfuse развёрнут                                       │
+    │  [ ] Prompts версионированы                                   │
+    │  [ ] A/B testing workflow документирован                      │
+    │  [ ] Auto-rollback настроен                                   │
     │                                                              │
     └──────────────────────────────────────────────────────────────┘
 ```
@@ -1661,7 +1767,12 @@ tenants:
     ├── 0002-hmac-hash-chain-for-audit.md
     ├── 0003-redis-for-rate-limiting.md
     ├── 0004-tenant-id-in-context.md
-    └── 0005-circuit-breaker-library-choice.md
+    ├── 0005-circuit-breaker-library-choice.md
+    ├── 0006-observability-stack.md
+    ├── 0007-prompt-ab-testing.md
+    ├── 0008-cost-attribution-per-agent.md
+    ├── 0009-pii-redaction.md
+    └── 0010-key-management.md
 ```
 
 ### 11.2. Дополнительная документация
@@ -1675,18 +1786,19 @@ tenants:
     ├── security/
     │   ├── threat-model.md       # STRIDE model (25 угроз)
     │   ├── compliance-mapping.md # 152-ФЗ, GDPR, PCI DSS, HIPAA
-    │   ├── key-management.md     # Управление HMAC keys (TBD)
+    │   ├── key-management.md     # Управление HMAC keys (ADR-0010)
     │   └── incident-response.md  # Runbook (TBD)
     ├── reliability/
     │   ├── slo.md                # SLI / SLO / error budget
     │   ├── capacity-planning.md  # FinOps, cost per 1M MCP calls
-    │   └── runbook.md            # Ops runbook (TBD)
+    │   └── runbook.md            # Ops runbook + incident replay
     └── blueprint.md              # Этот документ
 ```
 
 ### 11.3. Индустриальные стандарты и best practices
 
 - [NIST SP 800-207: Zero Trust Architecture](https://csrc.nist.gov/publications/detail/sp/800-207/final)
+- [NIST SP 800-57: Key Management](https://csrc.nist.gov/publications/detail/sp/800-57-part-1/rev-5/final)
 - [NIST SP 800-92: Guide to Computer Security Log Management](https://csrc.nist.gov/publications/detail/sp/800-92/final)
 - [SPIFFE Standard](https://spiffe.io/docs/latest/spiffe-about/overview/)
 - [WIMSE IETF Working Group](https://datatracker.ietf.org/group/wimse/about/)
@@ -1694,8 +1806,9 @@ tenants:
 - [GDPR](https://gdpr-info.eu/)
 - [152-ФЗ](https://www.consultant.ru/document/cons_doc_LAW_61801/)
 - [Google SRE Book](https://sre.google/sre-book/table-of-contents/)
-- [Martin Fowler: Circuit Breaker](https://martinfowler.com/bliki/CircuitBreaker.html)
-- [The Twelve-Factor App](https://12factor.net/)
+- [OpenTelemetry Specification](https://opentelemetry.io/docs/specs/otel/)
+- [OpenBao Documentation](https://openbao.org/)
+- [Langfuse Documentation](https://langfuse.com/docs)
 - [FinOps Foundation](https://www.finops.org/)
 
 ### 11.4. Связанные проекты
@@ -1713,48 +1826,29 @@ tenants:
     ├──────────────────┼──────────────────────────────────────────┤
     │ ADR              │ Architecture Decision Record — документ,  │
     │                  │ фиксирующий архитектурное решение         │
-    │                  │                                          │
     │ MCP              │ Model Context Protocol — открытый        │
     │                  │ стандарт для AI-агентов                  │
-    │                  │                                          │
     │ SPIFFE           │ Secure Production Identity Framework     │
     │                  │ for Everyone — стандарт identity         │
-    │                  │                                          │
     │ SVID             │ SPIFFE Verifiable Identity Document —    │
     │                  │ X.509 сертификат с SPIFFE ID в SAN       │
-    │                  │                                          │
     │ SPIRE            │ SPIFFE Runtime Environment — реализация  │
     │                  │ SPIFFE                                   │
-    │                  │                                          │
     │ HMAC             │ Hash-based Message Authentication Code — │
     │                  │ симметричная подпись                     │
-    │                  │                                          │
-    │ Tenant           │ Организационная единица (клиент, команда,│
-    │                  │ пользователь) со своими политиками       │
-    │                  │                                          │
-    │ Circuit Breaker  │ Паттерн отказоустойчивости: блокирует    │
-    │                  │ запросы при деградации upstream          │
-    │                  │                                          │
+    │ Tenant           │ Организационная единица (клиент, команда)│
+    │ Agent            │ AI-приложение внутри tenant'а            │
+    │ Circuit Breaker  │ Паттерн отказоустойчивости               │
     │ Rate Limiting    │ Ограничение частоты запросов             │
-    │                  │                                          │
-    │ SLO              │ Service Level Objective — целевой уровень│
-    │                  │ надёжности                               │
-    │                  │                                          │
-    │ SLI              │ Service Level Indicator — измеряемый     │
-    │                  │ показатель                               │
-    │                  │                                          │
-    │ PII              │ Personally Identifiable Information —    │
-    │                  │ персональные данные                      │
-    │                  │                                          │
-    │ FinOps           │ Практика управления затратами на облако  │
-    │                  │ и LLM                                    │
-    │                  │                                          │
-    │ ROI              │ Return on Investment — окупаемость       │
-    │                  │ инвестиций                               │
-    │                  │                                          │
-    │ TCO              │ Total Cost of Ownership — совокупная     │
-    │                  │ стоимость владения                       │
-    │                  │                                          │
+    │ SLO              │ Service Level Objective                  │
+    │ SLI              │ Service Level Indicator                  │
+    │ PII              │ Personally Identifiable Information      │
+    │ FinOps           │ Управление затратами                     │
+    │ ROI              │ Return on Investment                     │
+    │ TCO              │ Total Cost of Ownership                  │
+    │ OpenBao          │ Open-source fork HashiCorp Vault         │
+    │ Langfuse         │ Open-source LLM observability            │
+    │ OTel             │ OpenTelemetry                            │
     └──────────────────┴──────────────────────────────────────────┘
 ```
 
@@ -1768,26 +1862,30 @@ tenants:
     ├────────────┼──────────────┼──────────────────────────────────┤
     │ 1.0        │ 2026-09-23   │ Initial blueprint                │
     │            │              │ • 5 ADR included                 │
-    │            │              │ • C4 diagrams (context + container)│
+    │            │              │ • C4 diagrams                    │
     │            │              │ • Request flow for tools/call    │
     │            │              │ • Threat model summary           │
     │            │              │ • Compliance mapping             │
     │            │              │ • SLO summary                    │
-    │            │              │ • Deployment architecture        │
     │            │              │                                  │
     │ 2.0        │ 2026-09-24   │ Major update:                    │
-    │            │              │ • Новый раздел 2.3: C4 Container  │
-    │            │              │   with Cost Annotations          │
-    │            │              │ • Cost summary table             │
-    │            │              │ • ROI ranking (do / don't do)    │
-    │            │              │ • Cost tier by C4 layer          │
-    │            │              │ • Новый раздел 7: FinOps и Unit  │
-    │            │              │   Economics                      │
-    │            │              │ • Российские LLM (GigaChat,      │
-    │            │              │   YandexGPT, DeepSeek, Ollama)   │
-    │            │              │ • Все цены в рублях РФ           │
-    │            │              │ • Threat model обновлён (25 угроз)│
+    │            │              │ • C4 Container with Cost         │
+    │            │              │   Annotations                    │
+    │            │              │ • FinOps раздел                  │
+    │            │              │ • Российские LLM (RUB)           │
+    │            │              │ • Threat model (25 угроз)        │
     │            │              │ • Compliance + NIST 800-207      │
+    │            │              │                                  │
+    │ 3.0        │ 2026-09-25   │ ADR-0006-0010 added:             │
+    │            │              │ • ADR-0006 Observability stack   │
+    │            │              │ • ADR-0007 Prompt A/B testing    │
+    │            │              │ • ADR-0008 Cost per agent        │
+    │            │              │ • ADR-0009 PII redaction         │
+    │            │              │ • ADR-0010 Key mgmt (OpenBao)    │
+    │            │              │ • Vault → OpenBao migration      │
+    │            │              │ • Prompt-level observability     │
+    │            │              │ • Cost attribution per agent     │
+    │            │              │ • Roadmap Phase 4 (LLM-Ops)      │
     └────────────┴──────────────┴──────────────────────────────────┘
 ```
 
@@ -1803,3 +1901,4 @@ tenants:
 
 **Ключевой принцип:** каждое значимое решение фиксируется в ADR.
 Blueprint — производный документ, ссылающийся на ADR.
+
