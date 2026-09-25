@@ -9,7 +9,8 @@
 
 ## Context
 
-MCP Gateway проксирует запросы AI-агентов к LLM. Каждый промпт, отправляемый в LLM, влияет на:
+MCP Gateway проксирует запросы AI-агентов к LLM. Каждый промпт, отправляемый
+в LLM, влияет на:
 
 - **Качество ответа** — правильно ли агент решил задачу.
 - **Стоимость** — количество input/output токенов (₽/call).
@@ -221,6 +222,259 @@ MCP Gateway проксирует запросы AI-агентов к LLM. Каж
 
 ---
 
+## Implementation details
+
+### Langfuse API contract
+
+```
+    ┌──────────────────────────────────────────────────────────────┐
+    │                                                              │
+    │  Authentication:                                             │
+    │  • Basic Auth: public_key / secret_key                       │
+    │  • Env: LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY             │
+    │  • Base URL: LANGFUSE_BASE_URL (self-hosted или cloud)       │
+    │                                                              │
+    │  Endpoints (REST v2):                                        │
+    │                                                              │
+    │  1. GET /api/public/v2/prompts/{name}?label={label}          │
+    │     Response:                                                │
+    │     {                                                        │
+    │       "name": "system-prompt-tools-call",                    │
+    │       "version": 2,                                          │
+    │       "type": "chat",                                        │
+    │       "prompt": [                                            │
+    │         {"role": "system", "content": "You are..."},         │
+    │         {"role": "user", "content": "{{user_message}}"}      │
+    │       ],                                                     │
+    │       "labels": ["prod-b"],                                  │
+    │       "config": {"model": "giga-chat-pro"}                   │
+    │     }                                                        │
+    │                                                              │
+    │  2. POST /api/public/v2/prompts                              │
+    │     Создать новую версию промпта                             │
+    │                                                              │
+    │  3. PATCH /api/public/v2/prompts/{name}/versions/{version}   │
+    │     Обновить labels (для rollback)                           │
+    │                                                              │
+    │  4. POST /api/public/ingestion                               │
+    │     Отправить traces (батчами)                               │
+    │                                                              │
+    │  5. GET /api/public/metrics                                  │
+    │     Метрики для auto-rollback                                │
+    │                                                              │
+    │  6. Webhooks                                                 │
+    │     • prompt.updated                                         │
+    │     • prompt.label.changed                                   │
+    │     Используется для cache invalidation                      │
+    │                                                              │
+    └──────────────────────────────────────────────────────────────┘
+```
+
+### Go structs
+
+```go
+// Prompt — представление промпта из Langfuse
+type Prompt struct {
+    Name    string                 `json:"name"`
+    Version int                    `json:"version"`
+    Type    string                 `json:"type"`   // "chat" | "text"
+    Prompt  []Message              `json:"prompt"`
+    Labels  []string               `json:"labels"`
+    Config  map[string]interface{} `json:"config"`
+    Tags    []string               `json:"tags,omitempty"`
+}
+
+// Message — сообщение в chat-промпте
+type Message struct {
+    Role    string `json:"role"`    // "system" | "user" | "assistant"
+    Content string `json:"content"`
+}
+
+// ABConfig — конфигурация A/B эксперимента
+type ABConfig struct {
+    PromptName string // "system-prompt-tools-call"
+    LabelA     string // "prod-a"
+    LabelB     string // "prod-b"
+    SplitPct   int    // 50 = 50% на A, 50% на B
+}
+
+// Client — клиент Langfuse с in-memory cache
+type Client struct {
+    baseURL    string
+    publicKey  string
+    secretKey  string
+    httpClient *http.Client
+    
+    mu    sync.RWMutex
+    cache map[string]*cacheEntry
+}
+
+type cacheEntry struct {
+    prompt    *Prompt
+    expiresAt time.Time
+}
+```
+
+### OTel span attributes
+
+```
+    ┌──────────────────────────────────────────────────────────────┐
+    │                                                              │
+    │  КРИТИЧНО: attributes должны быть на GENERATION span,         │
+    │  не на parent span.                                          │
+    │                                                              │
+    │  Обязательные attributes:                                    │
+    │                                                              │
+    │  • langfuse.observation.type = "generation"                  │
+    │    ⚠️ Без него Langfuse игнорирует prompt linkage            │
+    │                                                              │
+    │  • langfuse.prompt.name = "system-prompt-tools-call"         │
+    │  • langfuse.prompt.version = 2                               │
+    │                                                              │
+    │  GenAI semconv (OpenTelemetry):                              │
+    │  • gen_ai.operation.name = "chat"                            │
+    │  • gen_ai.request.model = "giga-chat-pro"                    │
+    │  • gen_ai.usage.input_tokens = 2000                          │
+    │  • gen_ai.usage.output_tokens = 500                          │
+    │  • gen_ai.response.finish_reasons = ["stop"]                 │
+    │                                                              │
+    │  Custom attributes (наш gateway):                            │
+    │  • tenant.id = "acme"                                        │
+    │  • agent.id = "agent-x"                                      │
+    │  • mcp.method = "tools/call"                                 │
+    │  • pii.redacted_count = 2                                    │
+    │                                                              │
+    └──────────────────────────────────────────────────────────────┘
+```
+
+### Deterministic hash алгоритм
+
+```go
+func (c *ABConfig) SelectLabel(
+    tenantID, agentID, requestID string,
+) string {
+    h := sha256.New()
+    h.Write([]byte(tenantID))
+    h.Write([]byte(":"))
+    h.Write([]byte(agentID))
+    h.Write([]byte(":"))
+    h.Write([]byte(requestID))
+    
+    hash := h.Sum(nil)
+    bucket := binary.BigEndian.Uint32(hash[:4]) % 100
+    
+    if int(bucket) < c.SplitPct {
+        return c.LabelA
+    }
+    return c.LabelB
+}
+```
+
+**Важно:** hash от `(tenant_id, agent_id, request_id)` — детерминированный.
+Один запрос всегда одна версия. Replay воспроизводим.
+
+### Rollout plan
+
+```
+    ┌──────────────────────────────────────────────────────────────┐
+    │                                                              │
+    │  Phase 1: Prompt versioning (без A/B) — 1 неделя             │
+    │  ─────────────────────────────────────────────               │
+    │  • Развернуть Langfuse                                       │
+    │  • Создать prompts в Langfuse                                │
+    │  • Интегрировать Prompt Resolver в gateway                   │
+    │  • Заменить hardcoded prompts на dynamic fetch               │
+    │  • Label: "production" для текущей версии                    │
+    │                                                              │
+    │  Phase 2: A/B split — 2 недели                               │
+    │  ────────────────────────                                    │
+    │  • Создать версию v2 с label "prod-b"                        │
+    │  • Split 10% → monitor 1 неделя                              │
+    │  • Если OK → split 50% → monitor 1 неделя                    │
+    │  • Собрать метрики: cost, latency, quality                   │
+    │                                                              │
+    │  Phase 3: Auto-rollback — 1 неделя                           │
+    │  ────────────────────────────                                │
+    │  • Настроить Webhooks в Langfuse                             │
+    │  • Реализовать Monitor в gateway                             │
+    │  • Триггеры: cost > 1.5x, latency > 2x, success < 95%        │
+    │  • Test с искусственной деградацией                          │
+    │                                                              │
+    │  Phase 4: LLM-as-a-Judge — 1 неделя                          │
+    │  ────────────────────────────                                │
+    │  • Настроить Evaluator в Langfuse                            │
+    │  • Criteria: correctness, format, tone, safety               │
+    │  • Score 0-1, автозапуск на каждый response                  │
+    │                                                              │
+    └──────────────────────────────────────────────────────────────┘
+```
+
+### Known limitations
+
+```
+    ┌──────────────────────────────────────────────────────────────┐
+    │                                                              │
+    │  1. Go SDK — community-maintained                            │
+    │     ❌ Официального Go SDK от Langfuse нет                   │
+    │     ⚠️ Community: github.com/git-hulk/langfuse-go            │
+    │     ✅ Fallback: REST API (примеры в этом ADR)               │
+    │     💡 Решение: обёртка над REST API + structs выше          │
+    │                                                              │
+    │  2. OTel prompt linkage — тонкости                           │
+    │     ⚠️ Атрибуты должны быть на GENERATION span,              │
+    │        не на parent                                            │
+    │     ⚠️ Требуется langfuse.observation.type = "generation"    │
+    │     💡 Тестировать через Langfuse UI: prompt должен           │
+    │        появиться в trace                                       │
+    │                                                              │
+    │  3. Auto-rollback — кастомный код                            │
+    │     ❌ Langfuse не делает auto-rollback из коробки           │
+    │     ⚠️ Требуется Monitor (~300 строк Go)                     │
+    │     💡 Или: Langfuse Webhooks + Gateway admin API            │
+    │                                                              │
+    │  4. Cache TTL vs rollback latency                            │
+    │     ⚠️ Cache 5 минут = до 5 минут до применения rollback     │
+    │     💡 Admin endpoint для force refresh:                     │
+    │        mcp-gateway admin prompt refresh                      │
+    │                                                              │
+    │  5. Split consistency между pods                             │
+    │     ⚠️ Deterministic hash обязателен (не random)             │
+    │     💡 Hash от (tenant, agent, request_id), не от pod state  │
+    │                                                              │
+    │  6. Prompt Experiments — offline testing                     │
+    │     ⚠️ Требует dataset с expected outputs                    │
+    │     ⚠️ Требует LLM connection в Langfuse                     │
+    │     💡 Setup: 1-2 дня на подготовку dataset                  │
+    │                                                              │
+    └──────────────────────────────────────────────────────────────┘
+```
+
+### Что из коробки vs кастомный код
+
+```
+    ┌─────────────────────────────┬──────────────────────────────┐
+    │ Функция                     │ Реализация                   │
+    ├─────────────────────────────┼──────────────────────────────┤
+    │                             │                              │
+    │ Prompt versioning           │ ✅ Langfuse из коробки       │
+    │ Labels (prod-a/prod-b)      │ ✅ Langfuse из коробки       │
+    │ A/B split (deterministic)   │ 🟡 Кастомный код (~100 строк)│
+    │ Prompt fetch + cache        │ 🟡 Кастомный код (~150 строк)│
+    │ OTel prompt linkage         │ 🟡 Span attributes (~50 строк)│
+    │ Metrics (cost/latency)      │ ✅ Langfuse из коробки       │
+    │ LLM-as-a-Judge              │ ✅ Langfuse Evaluators       │
+    │ Offline Experiments         │ ✅ Langfuse Prompt Experiments│
+    │ Auto-rollback               │ 🟡 Кастомный код (~300 строк)│
+    │                             │                              │
+    ├─────────────────────────────┼──────────────────────────────┤
+    │ Итого кастомного кода       │ ~600 строк Go                │
+    │ Итого из коробки Langfuse   │ 80% функциональности         │
+    │                             │                              │
+    └─────────────────────────────┴──────────────────────────────┘
+```
+
+---
+
 ## Rationale
 
 ### Почему Langfuse, а не собственное решение
@@ -239,12 +493,12 @@ MCP Gateway проксирует запросы AI-агентов к LLM. Каж
 
 - Open-source, self-hosted.
 - Уже в стеке (ADR-0006).
-- Встроенный Prompt Management [citation:1].
-- Встроенный A/B testing через labels [citation:1].
-- Встроенные эксперименты через UI (Prompt Experiments) [citation:6][citation:7].
+- Встроенный Prompt Management.
+- Встроенный A/B testing через labels.
+- Встроенные эксперименты через UI (Prompt Experiments).
 - Встроенные evals (LLM-as-a-Judge).
-- SDK для Go (community-maintained) [citation:4][citation:11].
-- Интеграция с OTel [citation:10].
+- SDK для Go (community-maintained).
+- Интеграция с OTel.
 
 **Оценка:** 2-3 дня на интеграцию.
 
@@ -280,6 +534,7 @@ if rand.Float64() < 0.5 {
 
 **Проблема:** один и тот же запрос может попасть в разные версии при retry.
 Это ломает:
+
 - **Reproducibility** — replay даст другой результат.
 - **Debugging** — сложно понять, какую версию видел пользователь.
 - **Consistency** — один tenant может видеть разные версии.
@@ -297,6 +552,7 @@ if bucket < 50 {
 ```
 
 **Преимущества:**
+
 - Один запрос → одна версия всегда.
 - Replay воспроизводим.
 - Debugging простой.
@@ -305,15 +561,18 @@ if bucket < 50 {
 
 ### Почему LLM-as-a-Judge, а не только метрики
 
-**Числовые метрики** (cost, latency, success_rate) не измеряют **качество ответа**.
+**Числовые метрики** (cost, latency, success_rate) не измеряют **качество
+ответа**.
 
 **Пример:**
+
 - Prompt A: 100ms latency, 1000 токенов, 95% success.
 - Prompt B: 200ms latency, 1500 токенов, 98% success.
 
 Какой лучше? Метрики не отвечают. Нужен **quality score**.
 
-**LLM-as-a-Judge** [citation:6][citation:7]:
+**LLM-as-a-Judge:**
+
 - Отдельная LLM оценивает ответы по критериям (correctness, format, tone).
 - Score 0-1.
 - Автоматизировано, не требует human labeling.
@@ -323,11 +582,13 @@ if bucket < 50 {
 ### Почему auto-rollback, а не manual
 
 **Manual rollback:**
+
 - Требует on-call engineer.
 - Задержка 5-30 минут.
 - Человеческий фактор (забыли, ошиблись).
 
 **Auto-rollback:**
+
 - Мгновенно (Langfuse webhook → gateway admin API).
 - Без участия человека.
 - Consistent: всегда срабатывает.
@@ -335,6 +596,7 @@ if bucket < 50 {
 **Риск:** false positive (auto-rollback при transient spike).
 
 **Митигация:**
+
 - Rolling window (15 минут) — сглаживает transient.
 - Multiple triggers (cost + latency + success rate) — снижает false positive.
 - Manual override — on-call может отменить auto-rollback.
@@ -352,8 +614,8 @@ if bucket < 50 {
 - **Auto-rollback** — деградация откатывается за минуты.
 - **Reproducibility** — deterministic split для replay.
 - **Zero extra infra** — Langfuse уже в стеке (ADR-0006).
-- **Быстрый rollback** — смена label вместо deploy (95% быстрее) [citation:17].
-- **A/B testing setup** — 10 минут через UI вместо дня кода [citation:17].
+- **Быстрый rollback** — смена label вместо deploy (95% быстрее).
+- **A/B testing setup** — 10 минут через UI вместо дня кода.
 - **LLM-as-a-Judge** — автоматическая оценка качества.
 
 ### Negative
@@ -368,13 +630,15 @@ if bucket < 50 {
   Митигация: rolling window + multiple triggers.
 - **Storage costs** — Langfuse хранит prompts/responses (30 дней).
   Митигация: PII redaction перед сохранением (ADR-0006).
+- **Кастомный код** — ~600 строк Go для Prompt Resolver + Monitor.
+  Митигация: обёртка над REST API + unit tests.
 
 ### Neutral
 
 - **Prompt versioning** — новая дисциплина для команды. Требует обучения.
 - **Metrics cardinality** — labels `prompt_version` увеличивают cardinality
   Prometheus. Митигация: только active versions в labels.
-- **Go SDK** — community-maintained, не official [citation:4][citation:11].
+- **Go SDK** — community-maintained, не official.
   Митигация: fallback на REST API.
 
 ---
@@ -512,7 +776,8 @@ if bucket < 50 {
 - Нет A/B testing.
 - Нет метрик per version.
 
-**Решение:** отклонено. Git для prompts — медленно. Гибридный подход: prompts в Langfuse, версии ссылаются на git SHA.
+**Решение:** отклонено. Git для prompts — медленно. Гибридный подход: prompts
+в Langfuse, версии ссылаются на git SHA.
 
 ### Alternative 4: Random split вместо deterministic hash
 
@@ -533,15 +798,21 @@ if bucket < 50 {
 Задачи, вытекающие из этого ADR:
 
 - [ ] **Langfuse Prompt Management setup**:
+  - Развернуть Langfuse (docker-compose для dev, Helm для prod)
   - Создать prompts в Langfuse UI
   - Определить labels: `production`, `prod-a`, `prod-b`, `staging`
-  - Настроить Prompt Experiments для offline testing [citation:6][citation:7]
+  - Настроить Prompt Experiments для offline testing
 
 - [ ] **Gateway integration**:
-  - Интегрировать Langfuse Go SDK (community-maintained) [citation:4][citation:11]
-  - Или fallback на REST API (если SDK нестабилен)
+  - Интегрировать Langfuse REST API (обёртка на Go)
   - Prompt Resolver с cache TTL 5 минут
   - Deterministic hash split
+  - Fallback на default prompts при недоступности Langfuse
+
+- [ ] **OTel span attributes**:
+  - `langfuse.observation.type = "generation"`
+  - `langfuse.prompt.name` + `langfuse.prompt.version`
+  - Integration test: prompt появился в Langfuse UI
 
 - [ ] **Metrics**:
   - `mcp_gateway_prompt_version_usage{name, version}` (counter)
@@ -586,6 +857,7 @@ if bucket < 50 {
 - [Langfuse: How to measure prompt performance](https://langfuse-docs-git-add-js-sdk-v4-docs-langfuse.vercel.app/faq/all/how-to-measure-prompt-performance)
 - [Langfuse: community-maintained Go SDKs](https://github.com/langfuse/langfuse-examples)
 - [Langfuse: OTel integration](https://raw.githubusercontent.com/trpc-group/trpc-agent-go/main/docs/mkdocs/en/observability.md)
+- [OpenTelemetry: GenAI Semantic Conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/)
 
 ---
 
